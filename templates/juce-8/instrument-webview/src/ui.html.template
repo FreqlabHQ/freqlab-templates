@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>{{pascal_name}}</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                background: linear-gradient(135deg, #1a1a2e 0%, #0f0f1a 100%);
+                color: white;
+                height: 100vh;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                padding: 20px;
+                user-select: none;
+                overflow: hidden;
+            }
+
+            h1 {
+                font-size: 22px;
+                font-weight: 600;
+                margin-bottom: 20px;
+            }
+
+            .controls {
+                display: flex;
+                gap: 40px;
+                margin-top: 10px;
+            }
+
+            .section {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 15px;
+            }
+
+            .section-label {
+                font-size: 11px;
+                color: #6c9ced;
+                text-transform: uppercase;
+                letter-spacing: 2px;
+            }
+
+            .knob-row {
+                display: flex;
+                gap: 15px;
+            }
+
+            .control {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .knob-container {
+                position: relative;
+                width: 70px;
+                height: 70px;
+            }
+
+            .knob {
+                width: 100%;
+                height: 100%;
+                border-radius: 50%;
+                background: linear-gradient(145deg, #2b2b3d, #1a1a2e);
+                box-shadow:
+                    0 6px 12px rgba(0, 0, 0, 0.4),
+                    inset 0 1px 1px rgba(255, 255, 255, 0.1);
+                cursor: pointer;
+                position: relative;
+            }
+
+            .knob-pointer {
+                position: absolute;
+                top: 10%;
+                left: 50%;
+                width: 3px;
+                height: 25%;
+                background: #6c9ced;
+                border-radius: 2px;
+                transform-origin: center 167%;
+                transform: translateX(-50%) rotate(0deg);
+            }
+
+            .knob-value {
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                font-size: 11px;
+                font-weight: 600;
+                pointer-events: none;
+                white-space: nowrap;
+            }
+
+            label {
+                font-size: 11px;
+                font-weight: 500;
+                color: #a0a0b0;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+            }
+
+            .large .knob-container {
+                width: 90px;
+                height: 90px;
+            }
+            .large .knob-value {
+                font-size: 13px;
+            }
+            .large .knob-pointer {
+                width: 4px;
+                height: 30%;
+            }
+
+            /* ===== Freqlab license UI =====
+           Every element starts at `display: none`.  We only flip them
+           visible once the C++ side emits a `licenseState` event with
+           `active: true`, meaning the licensing SDK is
+           configured.  Local builds (Status::NoConfig) skip past the
+           `if (!state.active)` branch in JS and the UI stays
+           invisible, so the editor looks identical to a non-licensed
+           plugin. */
+            .freqlab-pill {
+                position: fixed;
+                top: 6px;
+                right: 8px;
+                display: none;
+                align-items: center;
+                gap: 6px;
+                padding: 3px 10px 3px 6px;
+                border-radius: 9px;
+                background: rgba(0, 0, 0, 0.62);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                font-size: 10px;
+                line-height: 1;
+                cursor: pointer;
+                user-select: none;
+                z-index: 20;
+            }
+            .freqlab-pill__dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: #aaa;
+            }
+            .freqlab-banner {
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                display: none;
+                padding: 6px 12px;
+                font-size: 12px;
+                text-align: center;
+                color: #ffe6c8;
+                cursor: pointer;
+                user-select: none;
+                z-index: 19;
+            }
+            .freqlab-modal__bg {
+                position: fixed;
+                inset: 0;
+                background: rgba(0, 0, 0, 0.55);
+                display: none;
+                align-items: center;
+                justify-content: center;
+                z-index: 30;
+            }
+            .freqlab-modal {
+                background: #1a1a2e;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 10px;
+                padding: 18px;
+                min-width: 280px;
+                max-width: 340px;
+                color: #e0e0e0;
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+                font-size: 12px;
+            }
+            .freqlab-modal__status {
+                display: inline-block;
+                padding: 2px 8px;
+                border-radius: 8px;
+                font-size: 10px;
+                font-weight: 600;
+                letter-spacing: 1px;
+                margin-bottom: 12px;
+                border: 1px solid currentColor;
+            }
+            .freqlab-modal__input {
+                width: 100%;
+                margin-bottom: 10px;
+                padding: 7px 9px;
+                background: rgba(0, 0, 0, 0.4);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 6px;
+                color: #e0e0e0;
+                font-family: ui-monospace, SFMono-Regular, monospace;
+                font-size: 12px;
+                box-sizing: border-box;
+            }
+            .freqlab-modal__row {
+                display: flex;
+                gap: 8px;
+                justify-content: flex-end;
+            }
+            .freqlab-modal__btn {
+                padding: 6px 12px;
+                border-radius: 6px;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                background: rgba(255, 255, 255, 0.04);
+                color: #e0e0e0;
+                font-size: 11px;
+                cursor: pointer;
+            }
+            .freqlab-modal__btn:disabled {
+                opacity: 0.4;
+                cursor: not-allowed;
+            }
+            .freqlab-modal__btn--primary {
+                background: #2da86e;
+                border-color: #2da86e;
+            }
+            .freqlab-modal__error {
+                margin-top: 8px;
+                color: #ff6688;
+                font-size: 11px;
+                min-height: 1em;
+            }
+        </style>
+    </head>
+    <body>
+        <!-- Freqlab license UI (state-driven; hidden until C++ pushes
+         a `licenseState` event with active: true). -->
+        <div class="freqlab-pill" id="freqlabPill">
+            <span class="freqlab-pill__dot" id="freqlabPillDot"></span>
+            <span id="freqlabPillLabel">License</span>
+        </div>
+        <div class="freqlab-banner" id="freqlabBanner"></div>
+        <div class="freqlab-modal__bg" id="freqlabModalBg">
+            <div class="freqlab-modal" id="freqlabModal">
+                <span class="freqlab-modal__status" id="freqlabModalStatus">UNKNOWN</span>
+                <div id="freqlabModalKeyField">
+                    <input
+                        class="freqlab-modal__input"
+                        id="freqlabModalKey"
+                        placeholder="XXXX-XXXX-XXXX-XXXX"
+                        autocomplete="off"
+                    />
+                </div>
+                <div class="freqlab-modal__row">
+                    <button
+                        class="freqlab-modal__btn freqlab-modal__btn--primary"
+                        id="freqlabActivateBtn"
+                    >
+                        ACTIVATE
+                    </button>
+                    <button class="freqlab-modal__btn" id="freqlabDeactivateBtn">DEACTIVATE</button>
+                    <button class="freqlab-modal__btn" id="freqlabCloseBtn">Close</button>
+                </div>
+                <div class="freqlab-modal__error" id="freqlabModalError"></div>
+            </div>
+        </div>
+
+        <h1>{{pascal_name}}</h1>
+
+        <div class="controls">
+            <div class="section large">
+                <div class="control">
+                    <label>Gain</label>
+                    <div class="knob-container">
+                        <div class="knob" id="gainKnob" data-param="gain" data-value="0.5">
+                            <div class="knob-pointer"></div>
+                            <div class="knob-value">0.0 dB</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            // ============================================================
+            // JUCE 8 WebView Native Function Bridge
+            // Uses the low-level __juce__invoke event API
+            // ============================================================
+            let promiseId = 0;
+            const pendingPromises = new Map();
+
+            if (window.__JUCE__ && window.__JUCE__.backend) {
+                window.__JUCE__.backend.addEventListener("__juce__complete", (data) => {
+                    if (pendingPromises.has(data.promiseId)) {
+                        pendingPromises.get(data.promiseId).resolve(data.result);
+                        pendingPromises.delete(data.promiseId);
+                    }
+                });
+            }
+
+            function callNative(name, ...args) {
+                return new Promise((resolve, reject) => {
+                    if (!window.__JUCE__ || !window.__JUCE__.backend) {
+                        reject("No JUCE backend");
+                        return;
+                    }
+                    const id = promiseId++;
+                    pendingPromises.set(id, { resolve, reject });
+                    window.__JUCE__.backend.emitEvent("__juce__invoke", {
+                        name: name,
+                        params: args,
+                        resultId: id,
+                    });
+                });
+            }
+
+            // ============================================================
+            // Knob UI Component
+            // ============================================================
+            let activeKnob = null;
+            let startY = 0;
+            let startValue = 0;
+
+            document.querySelectorAll(".knob").forEach((knob) => {
+                updateKnobVisual(knob);
+                knob.addEventListener("pointerdown", (e) => {
+                    // (a mouseup that never came: its gesture ends before the next one starts)
+                    if (activeKnob) callNative("endGesture", activeKnob.dataset.param);
+                    activeKnob = knob;
+                    callNative("beginGesture", knob.dataset.param);
+                    // (the drag keeps its pointer even outside the window, so its release always arrives)
+                    knob.setPointerCapture(e.pointerId);
+                    startY = e.clientY;
+                    startValue = parseFloat(knob.dataset.value);
+                    document.body.style.cursor = "ns-resize";
+                    e.preventDefault();
+                });
+            });
+
+            document.addEventListener("pointermove", (e) => {
+                if (!activeKnob) return;
+                // 200px drag = full range (values are normalized, 0 to 1; the plugin snaps them to its steps)
+                const newValue = Math.max(0, Math.min(1, startValue + (startY - e.clientY) / 200));
+                activeKnob.dataset.value = newValue;
+                updateKnobVisual(activeKnob);
+
+                // Send to JUCE via native function
+                const paramId = activeKnob.dataset.param;
+                callNative("setParameter", paramId, newValue);
+            });
+
+            function endDrag() {
+                if (activeKnob) callNative("endGesture", activeKnob.dataset.param);
+                activeKnob = null;
+                document.body.style.cursor = "default";
+            }
+            document.addEventListener("pointerup", endDrag);
+            document.addEventListener("pointercancel", endDrag);
+            // (the window losing focus mid-drag ends it too)
+            window.addEventListener("blur", endDrag);
+
+            function updateKnobVisual(knob) {
+                // Rotate only the pointer, not the whole knob
+                const angle = -135 + parseFloat(knob.dataset.value) * 270;
+                const pointer = knob.querySelector(".knob-pointer");
+                if (pointer) {
+                    pointer.style.transform = `translateX(-50%) rotate(${angle}deg)`;
+                }
+            }
+
+            // ============================================================
+            // Parameter Sync from JUCE: each parameter's normalized value (0 to 1) and display text
+            // ============================================================
+            if (window.__JUCE__ && window.__JUCE__.backend) {
+                window.__JUCE__.backend.addEventListener("paramChange", ({ id, value, text }) => {
+                    const knob = document.querySelector(`[data-param="${id}"]`);
+                    if (!knob) return;
+                    // (mid-drag the knob follows the pointer; only its readout follows the plugin)
+                    if (knob !== activeKnob) {
+                        knob.dataset.value = value;
+                        updateKnobVisual(knob);
+                    }
+                    const valueDisplay = knob.querySelector(".knob-value");
+                    if (valueDisplay) valueDisplay.textContent = text;
+                });
+            }
+
+            // Request initial parameter values on load
+            window.addEventListener("load", () => {
+                callNative("requestInit");
+            });
+
+            // ============================================================
+            // Freqlab license UI
+            // ============================================================
+            // C++ to JS: pill / banner / modal react to `licenseState`
+            // events emitted from the editor.  JS to C++: button clicks
+            // emit one-shot events (licenseActivate / licenseDeactivate /
+            // licenseQuery) via `window.__JUCE__.backend.emitEvent(...)`.
+            //
+            // When the SDK reports Status::NoConfig (local builds that
+            // didn't have the licensing config injected), `state.active`
+            // is false and we hide every element.  The editor then looks
+            // identical to a non-licensed plugin.
+            const FREQLAB_STATE_STYLE = {
+                Licensed: {
+                    dot: "#44ff88",
+                    label: "Licensed",
+                    banner: null,
+                    modalChip: "LICENSED",
+                },
+                Trial: { dot: "#66ccff", label: "Trial", banner: null, modalChip: "TRIAL" },
+                GracePeriod: {
+                    dot: "#ffcc44",
+                    label: "Expiring soon",
+                    banner: null,
+                    modalChip: "EXPIRING SOON",
+                },
+                Overdue: {
+                    dot: "#ffcc44",
+                    label: "Re-syncing",
+                    banner: null,
+                    modalChip: "RE-SYNCING",
+                },
+                NotActivated: {
+                    dot: "#ffaa44",
+                    label: "Not activated",
+                    banner: {
+                        bg: "rgba(70, 40, 0, 0.95)",
+                        text: "This plugin is not activated. Click to enter your license key.",
+                    },
+                    modalChip: "NOT ACTIVATED",
+                },
+                Expired: {
+                    dot: "#ff6655",
+                    label: "Expired",
+                    banner: {
+                        bg: "rgba(70, 20, 20, 0.95)",
+                        text: "Your license has expired. Renew to continue using this plugin.",
+                    },
+                    modalChip: "EXPIRED",
+                },
+                Tampered: {
+                    dot: "#bb55ff",
+                    label: "License invalid",
+                    banner: {
+                        bg: "rgba(45, 15, 70, 0.95)",
+                        text: "License could not be verified. Please reinstall the plugin.",
+                    },
+                    modalChip: "LICENSE INVALID",
+                },
+                NoConfig: { dot: "transparent", label: "", banner: null, modalChip: "UNKNOWN" },
+            };
+
+            let freqlabBusy = false;
+            let freqlabLastState = null;
+
+            function FreqlabApplyState(state) {
+                freqlabBusy = false;
+                freqlabLastState = state;
+                const style = FREQLAB_STATE_STYLE[state.status] || FREQLAB_STATE_STYLE.NoConfig;
+
+                const pill = document.getElementById("freqlabPill");
+                const banner = document.getElementById("freqlabBanner");
+                const modalBg = document.getElementById("freqlabModalBg");
+
+                if (!state.active) {
+                    pill.style.display = "none";
+                    banner.style.display = "none";
+                    modalBg.style.display = "none";
+                    return;
+                }
+
+                pill.style.display = "inline-flex";
+                document.getElementById("freqlabPillDot").style.background = style.dot;
+                const pillLabel = document.getElementById("freqlabPillLabel");
+                pillLabel.textContent = style.label;
+                pillLabel.style.color = style.dot;
+
+                if (style.banner) {
+                    banner.style.display = "block";
+                    banner.style.background = style.banner.bg;
+                    banner.textContent = style.banner.text;
+                } else {
+                    banner.style.display = "none";
+                }
+
+                if (modalBg.style.display === "flex") FreqlabRefreshModal();
+            }
+
+            function FreqlabRefreshModal() {
+                const state = freqlabLastState;
+                if (!state) return;
+                const style = FREQLAB_STATE_STYLE[state.status] || FREQLAB_STATE_STYLE.NoConfig;
+
+                const statusChip = document.getElementById("freqlabModalStatus");
+                statusChip.textContent = freqlabBusy ? "WORKING..." : style.modalChip;
+                statusChip.style.color = style.dot;
+
+                const isLicensed = state.status === "Licensed";
+                document.getElementById("freqlabModalKeyField").style.display = isLicensed
+                    ? "none"
+                    : "block";
+
+                const activateBtn = document.getElementById("freqlabActivateBtn");
+                const deactivateBtn = document.getElementById("freqlabDeactivateBtn");
+                activateBtn.style.display = isLicensed ? "none" : "inline-block";
+                activateBtn.disabled = freqlabBusy;
+                deactivateBtn.disabled =
+                    freqlabBusy || state.status === "NotActivated" || state.status === "NoConfig";
+
+                document.getElementById("freqlabModalError").textContent = state.error || "";
+            }
+
+            function FreqlabOpenModal() {
+                document.getElementById("freqlabModalBg").style.display = "flex";
+                FreqlabRefreshModal();
+            }
+            function FreqlabCloseModal() {
+                document.getElementById("freqlabModalBg").style.display = "none";
+            }
+
+            document.getElementById("freqlabPill").addEventListener("click", FreqlabOpenModal);
+            document.getElementById("freqlabBanner").addEventListener("click", FreqlabOpenModal);
+            document.getElementById("freqlabCloseBtn").addEventListener("click", FreqlabCloseModal);
+
+            document.getElementById("freqlabActivateBtn").addEventListener("click", () => {
+                const key = (document.getElementById("freqlabModalKey").value || "").trim();
+                if (!key) {
+                    document.getElementById("freqlabModalError").textContent =
+                        "Enter a license key first";
+                    return;
+                }
+                freqlabBusy = true;
+                FreqlabRefreshModal();
+                window.__JUCE__.backend.emitEvent("licenseActivate", { key: key });
+            });
+
+            document.getElementById("freqlabDeactivateBtn").addEventListener("click", () => {
+                freqlabBusy = true;
+                FreqlabRefreshModal();
+                window.__JUCE__.backend.emitEvent("licenseDeactivate", {});
+            });
+
+            if (window.__JUCE__ && window.__JUCE__.backend) {
+                window.__JUCE__.backend.addEventListener("licenseState", FreqlabApplyState);
+                window.__JUCE__.backend.emitEvent("licenseQuery", {});
+            }
+        </script>
+    </body>
+</html>

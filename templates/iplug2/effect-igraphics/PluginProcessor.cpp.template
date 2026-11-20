@@ -1,0 +1,136 @@
+#include "PluginProcessor.h"
+#include "IPlug_include_in_plug_src.h"
+
+#include <cmath>
+
+#include "freqlab_licensing.h"
+#include "freqlab_response.h"
+#include "freqlab_dsp.h"
+#include "LicenseUI.h"
+
+using namespace iplug;
+using namespace igraphics;
+
+{{class_name}}::{{class_name}}(const InstanceInfo& info)
+    : iplug::Plugin(info, MakeConfig(kNumParams, 1))  // params, presets
+{
+    // Define parameters
+    GetParam(kGain)->InitDouble("Gain", 0., -30., 30., 0.1, "dB");
+
+    // Initialize cached values
+    mGain = DBToAmp(GetParam(kGain)->Value());
+
+    // Sync the SDK cache against the server when the plugin loads.
+    // refreshAsync() returns immediately and does the blocking HTTPS
+    // call on the SDK's worker thread. No-op in stub builds.
+    freqlab::licensing::refreshAsync();
+
+#if IPLUG_EDITOR
+    mMakeGraphicsFunc = [&]() { return CreateGraphics(); };
+    mLayoutFunc = [&](IGraphics* pGraphics) { LayoutUI(pGraphics); };
+#endif
+}
+
+{{class_name}}::~{{class_name}}() {
+    // Block until any in-flight SDK worker has exited so the host can
+    // safely unload the plugin dylib.  Stub builds make this a no-op.
+    freqlab::licensing::shutdown();
+}
+
+#if IPLUG_EDITOR
+IGraphics* {{class_name}}::CreateGraphics() {
+    return MakeGraphics(*this, PLUG_WIDTH, PLUG_HEIGHT, PLUG_FPS, GetScaleForScreen(PLUG_WIDTH, PLUG_HEIGHT));
+}
+
+void {{class_name}}::LayoutUI(IGraphics* pGraphics) {
+    pGraphics->LoadFont("Roboto-Regular", "Arial", ETextStyle::Normal);
+    pGraphics->AttachCornerResizer(EUIResizerMode::Scale, false);
+    pGraphics->AttachPanelBackground(COLOR_DARK_GRAY);
+
+    const IRECT bounds = pGraphics->GetBounds();
+
+    // Title label
+    const IText titleText(24.f, COLOR_WHITE);
+    pGraphics->AttachControl(new ITextControl(
+        bounds.GetFromTop(50.f),
+        "{{pascal_name}}",
+        titleText
+    ));
+
+    // Gain knob
+    const IRECT knobArea = bounds.GetCentredInside(100.f, 100.f);
+    pGraphics->AttachControl(new IVKnobControl(knobArea, kGain));
+
+    // Gain label
+    const IText labelText(14.f, COLOR_WHITE);
+    pGraphics->AttachControl(new ITextControl(
+        knobArea.GetFromBottom(20.f).GetVShifted(30.f),
+        "Gain",
+        labelText
+    ));
+
+    // Freqlab licensing UI. The banner is added after the pill so it
+    // paints on top of the pill row when a bad-status banner shows.
+    auto* modal = new freqlab_ui::LicenseModalControl(bounds);
+
+    const float pillW = 120.f, pillH = 18.f;
+    const IRECT pillArea = IRECT(bounds.R - pillW - 8.f, 4.f,
+                                 bounds.R - 8.f,         4.f + pillH);
+    pGraphics->AttachControl(new freqlab_ui::LicenseStatusPill(pillArea, modal));
+
+    const IRECT bannerArea = bounds.GetFromTop(24.f);
+    pGraphics->AttachControl(new freqlab_ui::LicenseBanner(bannerArea, modal));
+
+    pGraphics->AttachControl(modal);
+}
+#endif
+
+void {{class_name}}::OnReset() {
+    // Called when sample rate or block size changes: gain glides over about 20 ms at this rate
+    mSmoothCoeff = 1.0 - std::exp(-1.0 / (0.02 * GetSampleRate()));
+    mSmoothedGain = mGain.load();
+}
+
+void {{class_name}}::OnParamChange(int paramIdx) {
+    switch (paramIdx) {
+        case kGain:
+            mGain = DBToAmp(GetParam(kGain)->Value());
+            break;
+    }
+}
+
+// The `@freqlab:require-license` marker tells our cloud transformer
+// to wrap this function with a license gate at build time. The inline
+// `freqlab_should_run_dsp(...)` call below makes the same gate run
+// during local development too, so the plugin silences correctly
+// without a cloud build.
+//
+// @freqlab:require-license
+void {{class_name}}::ProcessBlock(sample** inputs, sample** outputs, int nFrames) {
+    const int nChans = NOutChansConnected();
+    if (!freqlab_should_run_dsp(outputs, nChans, nFrames))
+        return;
+
+    const double target = mGain.load();
+
+    for (int s = 0; s < nFrames; s++) {
+        // Glides to the knob's value, so moving it doesn't crackle
+        mSmoothedGain += mSmoothCoeff * (target - mSmoothedGain);
+        const double gain = mSmoothedGain;
+        for (int c = 0; c < nChans; c++) {
+            double samp = inputs[c][s];
+            samp *= gain;
+
+            if (!std::isfinite(samp)) {
+                samp = 0.0;
+            }
+
+            outputs[c][s] = samp;
+        }
+    }
+
+    // The cloud transformer injects freqlab_dsp_fold(outputs, nChans, nFrames)
+    // here; it is the identity in all licensed builds and only mangles audio
+    // in an enforced cloud build when the license is bypassed.
+    // @freqlab:dsp-fold
+}

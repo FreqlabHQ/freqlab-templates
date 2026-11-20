@@ -1,0 +1,412 @@
+use nih_plug::prelude::*;
+use nih_plug_webview::{WebViewEditor, HTMLSource};
+use serde::Deserialize;
+use serde_json::json;
+use std::sync::Arc;
+use std::sync::Mutex;
+
+// Freqlab licensing: does nothing in stub builds (Status::NoConfig),
+// so a plugin without licensing behaves as if it weren't there.
+use freqlab_licensing as licensing;
+mod freqlab_response;
+mod freqlab_dsp;
+use freqlab_response::freqlab_should_run_dsp;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Messages from the WebView UI
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum UIMessage {
+    Init,
+    /// A drag starts and ends: one gesture to the host, so automation records one move
+    BeginGain,
+    SetGain { value: f32 },
+    EndGain,
+    ActivateLicense { key: String },
+    DeactivateLicense,
+    QueryLicense,
+}
+
+/// How long a note takes to fade in, and to fade out once its key is up
+const ATTACK_SECONDS: f32 = 0.005;
+const RELEASE_SECONDS: f32 = 0.05;
+
+/// Base output level (-6 dB) so 0 dB gain is a comfortable listening level
+const VOICE_LEVEL: f32 = 0.5;
+
+/// {{description}}
+struct {{struct_name}} {
+    params: Arc<{{struct_name}}Params>,
+    sample_rate: f32,
+    phase: f32,
+    note_freq: f32,
+    velocity: f32,
+    /// The velocity `velocity` moves to: a note that starts while the last one fades out glides
+    /// to its level instead of jumping (a jump clicks)
+    target_velocity: f32,
+    /// The MIDI note that's playing
+    note: u8,
+    /// Whether the note is held (its key is down)
+    gate: bool,
+    /// Fade level, 0.0 (silent) to 1.0 (full): see `ATTACK_SECONDS` and `RELEASE_SECONDS`
+    envelope: f32,
+}
+
+#[derive(Params)]
+struct {{struct_name}}Params {
+    #[id = "gain"]
+    pub gain: FloatParam,
+    /// Flag to notify UI when gain changes from host automation
+    gain_changed: Arc<AtomicBool>,
+}
+
+impl Default for {{struct_name}} {
+    fn default() -> Self {
+        Self {
+            params: Arc::new({{struct_name}}Params::default()),
+            sample_rate: 44100.0,
+            phase: 0.0,
+            note_freq: 0.0,
+            velocity: 0.0,
+            target_velocity: 0.0,
+            note: 0,
+            gate: false,
+            envelope: 0.0,
+        }
+    }
+}
+
+impl Default for {{struct_name}}Params {
+    fn default() -> Self {
+        let gain_changed = Arc::new(AtomicBool::new(false));
+        let gain_changed_clone = gain_changed.clone();
+
+        Self {
+            gain: FloatParam::new(
+                "Gain",
+                util::db_to_gain(0.0),
+                FloatRange::Skewed {
+                    min: util::db_to_gain(-30.0),
+                    max: util::db_to_gain(30.0),
+                    factor: FloatRange::gain_skew_factor(-30.0, 30.0),
+                },
+            )
+            .with_smoother(SmoothingStyle::Logarithmic(50.0))
+            .with_unit(" dB")
+            .with_value_to_string(formatters::v2s_f32_gain_to_db(2))
+            .with_string_to_value(formatters::s2v_f32_gain_to_db())
+            .with_callback(Arc::new(move |_| {
+                gain_changed_clone.store(true, Ordering::Relaxed);
+            })),
+            gain_changed,
+        }
+    }
+}
+
+impl {{struct_name}} {
+    fn midi_note_to_freq(note: u8) -> f32 {
+        440.0 * 2.0_f32.powf((note as f32 - 69.0) / 12.0)
+    }
+}
+
+impl Plugin for {{struct_name}} {
+    const NAME: &'static str = "{{pascal_name}}";
+    const VENDOR: &'static str = "{{vendor_name}}";
+    const URL: &'static str = "{{vendor_url}}";
+    const EMAIL: &'static str = "{{vendor_email}}";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: None,
+        main_output_channels: NonZeroU32::new(2),
+        ..AudioIOLayout::const_default()
+    }];
+
+    const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
+    // To send MIDI out: uncomment this line
+    // const MIDI_OUTPUT: MidiConfig = MidiConfig::Basic;
+
+    type SysExMessage = ();
+    type BackgroundTask = ();
+
+    fn params(&self) -> Arc<dyn Params> {
+        self.params.clone()
+    }
+
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+
+        let params = self.params.clone();
+        let gain_changed = self.params.gain_changed.clone();
+
+        // SDK calls (activate / deactivate / refresh) are blocking,
+        // so they run on worker threads. Workers set
+        // `license_changed = true`; on the next event_loop tick we
+        // read fresh state and send_json() to the WebView from the
+        // GUI thread. `last_license_error` carries the most recent
+        // activation/deactivation failure back to the UI.
+        let license_changed = Arc::new(AtomicBool::new(true));
+        let last_license_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        // A gain drag in progress, so closing the editor mid-drag can still end its gesture
+        let gain_gesture = Arc::new(AtomicBool::new(false));
+        let (close_params, close_gesture) = (params.clone(), gain_gesture.clone());
+
+        // Kick a refresh() when the editor opens so the UI sees the
+        // latest server-confirmed state. Flips `license_changed`
+        // when done so the first event-loop tick emits a fresh
+        // license_state message to the WebView.
+        {
+            let changed = license_changed.clone();
+            std::thread::spawn(move || {
+                let _ = licensing::refresh();
+                changed.store(true, Ordering::Relaxed);
+            });
+        }
+
+        let editor = WebViewEditor::new(HTMLSource::String(include_str!("ui.html")), (400, 320))
+            .with_background_color((26, 26, 46, 255))
+            .with_developer_mode(cfg!(debug_assertions))
+            .with_close_handler(move |setter| {
+                if close_gesture.swap(false, Ordering::Relaxed) {
+                    setter.end_set_parameter(&close_params.gain);
+                }
+            })
+            .with_event_loop(move |ctx, setter, _window| {
+                while let Ok(msg) = ctx.next_event() {
+                    if let Ok(ui_msg) = serde_json::from_value::<UIMessage>(msg) {
+                        match ui_msg {
+                            UIMessage::Init => {
+                                ctx.send_json(json!({
+                                    "type": "param_change",
+                                    "param": "gain",
+                                    "value": params.gain.unmodulated_normalized_value(),
+                                    "text": params.gain.to_string()
+                                }));
+                                license_changed.store(true, Ordering::Relaxed);
+                            }
+                            UIMessage::BeginGain => {
+                                gain_gesture.store(true, Ordering::Relaxed);
+                                setter.begin_set_parameter(&params.gain);
+                            }
+                            UIMessage::SetGain { value } => setter.set_parameter_normalized(&params.gain, value),
+                            // (unless closing the editor already ended it)
+                            UIMessage::EndGain => {
+                                if gain_gesture.swap(false, Ordering::Relaxed) {
+                                    setter.end_set_parameter(&params.gain);
+                                }
+                            }
+                            UIMessage::ActivateLicense { key } => {
+                                let changed = license_changed.clone();
+                                let err_slot = last_license_error.clone();
+                                std::thread::spawn(move || {
+                                    let result = licensing::validate_and_activate(&key);
+                                    if let Err(e) = result {
+                                        if let Ok(mut slot) = err_slot.lock() {
+                                            *slot = Some(format!("{}", e));
+                                        }
+                                    } else if let Ok(mut slot) = err_slot.lock() {
+                                        *slot = None;
+                                    }
+                                    changed.store(true, Ordering::Relaxed);
+                                });
+                            }
+                            UIMessage::DeactivateLicense => {
+                                let changed = license_changed.clone();
+                                let err_slot = last_license_error.clone();
+                                std::thread::spawn(move || {
+                                    let result = licensing::deactivate_this_machine();
+                                    if let Err(e) = result {
+                                        if let Ok(mut slot) = err_slot.lock() {
+                                            *slot = Some(format!("{}", e));
+                                        }
+                                    } else if let Ok(mut slot) = err_slot.lock() {
+                                        *slot = None;
+                                    }
+                                    changed.store(true, Ordering::Relaxed);
+                                });
+                            }
+                            UIMessage::QueryLicense => {
+                                license_changed.store(true, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
+
+                if gain_changed.swap(false, Ordering::Relaxed) {
+                    ctx.send_json(json!({
+                        "type": "param_change",
+                        "param": "gain",
+                        "value": params.gain.unmodulated_normalized_value(),
+                        "text": params.gain.to_string()
+                    }));
+                }
+
+                if license_changed.swap(false, Ordering::Relaxed) {
+                    let info = licensing::current();
+                    let status_str = match info.status {
+                        licensing::Status::Licensed => "Licensed",
+                        licensing::Status::Trial => "Trial",
+                        licensing::Status::GracePeriod => "GracePeriod",
+                        licensing::Status::Overdue => "Overdue",
+                        licensing::Status::Expired => "Expired",
+                        licensing::Status::NotActivated => "NotActivated",
+                        licensing::Status::Tampered => "Tampered",
+                        licensing::Status::NoConfig => "NoConfig",
+                    };
+                    let licensing_active = info.status != licensing::Status::NoConfig;
+                    let key_preview = info.license_key.as_deref().map(|k| {
+                        // (cut at a character, never inside one)
+                        let end = k.chars().position(|c| c == '-').map_or(8, |i| i + 5);
+                        k.char_indices().nth(end).map_or(k, |(i, _)| &k[..i])
+                    });
+                    let error = last_license_error.lock().ok().and_then(|s| s.clone());
+                    ctx.send_json(json!({
+                        "type": "license_state",
+                        "active": licensing_active,
+                        "status": status_str,
+                        "key_preview": key_preview,
+                        "features": info.features,
+                        "error": error,
+                    }));
+                }
+            });
+
+        Some(Box::new(editor))
+    }
+
+    // A reset (processing restart, sample rate change, host reset) ends any note still sounding
+    fn reset(&mut self) {
+        self.phase = 0.0;
+        self.gate = false;
+        self.envelope = 0.0;
+    }
+
+    fn initialize(
+        &mut self,
+        _audio_io_layout: &AudioIOLayout,
+        buffer_config: &BufferConfig,
+        _context: &mut impl InitContext<Self>,
+    ) -> bool {
+        // Sync the SDK cache against the server on plugin load.
+        // refresh() blocks (disk + HTTP) so it runs on a worker
+        // thread. No-op in stub builds (returns NoConfig).
+        std::thread::spawn(|| { let _ = licensing::refresh(); });
+
+        self.sample_rate = buffer_config.sample_rate;
+        true
+    }
+
+    // The `@freqlab:require-license` marker tells our cloud
+    // transformer to wrap this function with a license gate at
+    // build time. The inline `freqlab_should_run_dsp(buffer)`
+    // call below makes the same gate run during local development
+    // too, so the plugin silences correctly without a cloud build.
+    //
+    // @freqlab:require-license
+    fn process(
+        &mut self,
+        buffer: &mut Buffer,
+        _aux: &mut AuxiliaryBuffers,
+        context: &mut impl ProcessContext<Self>,
+    ) -> ProcessStatus {
+        if !freqlab_should_run_dsp(buffer) {
+            // (this block's MIDI is skipped, maybe a note's release: no note left hanging)
+            self.gate = false;
+            self.envelope = 0.0;
+            return ProcessStatus::Normal;
+        }
+
+        // MIDI events land on the sample they're timed for, not the start of the block
+        let mut next_event = context.next_event();
+        for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
+            while let Some(event) = next_event {
+                if event.timing() > sample_id as u32 {
+                    break;
+                }
+                match event {
+                    NoteEvent::NoteOn { note, velocity, .. } => {
+                        self.note = note;
+                        self.note_freq = Self::midi_note_to_freq(note);
+                        self.target_velocity = velocity;
+                        // From silence it starts at its level (the fade in covers it)
+                        if self.envelope == 0.0 {
+                            self.velocity = velocity;
+                        }
+                        self.gate = true;
+                    }
+                    // Only release the note that's playing
+                    NoteEvent::NoteOff { note, .. } if note == self.note => {
+                        self.gate = false;
+                    }
+                    // The host wants the note silent at once (no release)
+                    NoteEvent::Choke { note, .. } if note == self.note => {
+                        self.gate = false;
+                        self.envelope = 0.0;
+                    }
+                    _ => {}
+                }
+                next_event = context.next_event();
+            }
+
+            // A short fade in and out, so notes start and stop without a click
+            let step = if self.gate {
+                1.0 / (ATTACK_SECONDS * self.sample_rate)
+            } else {
+                -1.0 / (RELEASE_SECONDS * self.sample_rate)
+            };
+            self.envelope = (self.envelope + step).clamp(0.0, 1.0);
+            // A new note's level is reached over the same short time
+            let glide = 1.0 / (ATTACK_SECONDS * self.sample_rate);
+            self.velocity += (self.target_velocity - self.velocity).clamp(-glide, glide);
+
+            let gain = self.params.gain.smoothed.next();
+            // Simple sine wave oscillator
+            let sample = if self.envelope > 0.0 {
+                let sine = (self.phase * std::f32::consts::TAU).sin();
+                self.phase = (self.phase + self.note_freq / self.sample_rate) % 1.0;
+                sine * self.velocity * self.envelope * gain * VOICE_LEVEL
+            } else {
+                0.0
+            };
+
+            for output_sample in channel_samples {
+                // Protect against NaN/Inf (can crash DAWs)
+                *output_sample = if sample.is_finite() { sample } else { 0.0 };
+            }
+        }
+
+        // The cloud transformer injects freqlab_dsp_fold(buffer) here; it is the
+        // identity in all licensed builds and only mangles audio in an enforced
+        // cloud build when the license is bypassed.
+        // @freqlab:dsp-fold
+
+        ProcessStatus::Normal
+    }
+}
+
+impl Drop for {{struct_name}} {
+    fn drop(&mut self) {
+        // Flip the SDK's cancellation flag so any in-flight refresh /
+        // activate / deactivate worker bails at its next checkpoint
+        // before the host unloads us.  This template fires-and-forgets
+        // its workers; a plugin that stores JoinHandles should also
+        // `.join()` them here after calling `shutdown()`.
+        licensing::shutdown();
+    }
+}
+
+impl ClapPlugin for {{struct_name}} {
+    const CLAP_ID: &'static str = "{{clap_id}}";
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("{{description}}");
+    const CLAP_MANUAL_URL: Option<&'static str> = None;
+    const CLAP_SUPPORT_URL: Option<&'static str> = None;
+    const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::Instrument, ClapFeature::Synthesizer, ClapFeature::Stereo];
+}
+
+impl Vst3Plugin for {{struct_name}} {
+    const VST3_CLASS_ID: [u8; 16] = *b"{{vst3_id}}";
+    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[Vst3SubCategory::Synth, Vst3SubCategory::Instrument];
+}
+
+nih_export_clap!({{struct_name}});
+nih_export_vst3!({{struct_name}});

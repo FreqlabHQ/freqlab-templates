@@ -1,0 +1,65 @@
+name: CI
+
+# Pushes to main and tags: the crate's tests (seconds; every Starter loads and fills in).
+# Starter builds run only when someone with write access starts them by hand (Actions, CI, Run
+# workflow), for bigger changes: one job per framework per system, each building all of that
+# framework's Starters in turn. Pull requests never trigger anything here.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      framework:
+        description: Starters to build
+        type: choice
+        default: all
+        options: [all, iplug2, juce-8, juce-9, nih-plug]
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Crate tests
+    runs-on: depot-ubuntu-24.04
+    outputs:
+      frameworks: ${{ steps.list.outputs.frameworks }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+      - name: Frameworks to build
+        id: list
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PICKED: ${{ inputs.framework }}
+        run: |
+          if [[ "$PICKED" == "all" ]]; then
+            echo "frameworks=$(cargo run -q --example render -- --frameworks)" >> "$GITHUB_OUTPUT"
+          else
+            echo "frameworks=[\"$PICKED\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: ${{ matrix.framework }} Starters (${{ matrix.os }})
+    needs: test
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # (Depot runners, as the apps' Release workflows use)
+        os: [depot-macos-14, depot-windows-2022-4]
+        framework: ${{ fromJSON(needs.test.outputs.frameworks) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build every Starter
+        shell: bash
+        env:
+          FRAMEWORK: ${{ matrix.framework }}
+        run: ./scripts/build-starters.sh "$FRAMEWORK" "$RUNNER_TEMP/starters"

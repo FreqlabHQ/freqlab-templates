@@ -1,0 +1,194 @@
+cmake_minimum_required(VERSION 3.22)
+# Toolchain settings go before project(). The cloud build
+# injects the licensing SDK via -DCMAKE_PROJECT_INCLUDE during
+# project(), and anything set after project() does not apply to
+# the SDK. See freqlab-licensing/README.md.
+
+if(WIN32)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE INTERNAL "")
+endif()
+
+if(APPLE)
+    # 10.15 (Catalina), for the licensing SDK's std::filesystem use.
+    # (macOS 10.15, not 15: Apple kept 10.x numbering through 2020.)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS version")
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Universal binary")
+endif()
+
+project({{pascal_name}} VERSION 1.0.0)
+
+# Emit compile_commands.json so clangd (LSP) can resolve include paths
+# without a custom configuration. Ignored by build; only used by editors.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Fetch JUCE
+include(FetchContent)
+FetchContent_Declare(
+    JUCE
+    GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
+    GIT_TAG 9.0.5
+)
+
+# Fetch clap-juce-extensions for CLAP format support (JUCE 9 doesn't have native CLAP yet)
+FetchContent_Declare(
+    clap-juce-extensions
+    GIT_REPOSITORY https://github.com/free-audio/clap-juce-extensions.git
+    GIT_TAG 7adee3a1bd4684d4caa5601100e364abccff4b4d # main as of 2026-10-18
+)
+
+FetchContent_MakeAvailable(JUCE clap-juce-extensions)
+
+# Windows: Download WebView2 NuGet package for JUCE WebBrowserComponent (static linking)
+# macOS uses built-in WKWebView so this is only needed on Windows.
+# The NuGet package (.nupkg) is a ZIP containing headers and static library.
+# Kept in FREQLAB_WEBVIEW2_CACHE when set (Freqlab Studio shares it across its
+# projects), else in the project's FETCHCONTENT_BASE_DIR, one folder per version.
+# JUCE's FindWebView2.cmake takes the first *Microsoft.Web.WebView2* folder in
+# JUCE_WEBVIEW2_PACKAGE_LOCATION, so that's the version's own folder.
+if(WIN32)
+    set(WEBVIEW2_VERSION "1.0.3485.44")
+    if(FREQLAB_WEBVIEW2_CACHE)
+        set(WEBVIEW2_CACHE "${FREQLAB_WEBVIEW2_CACHE}")
+    else()
+        set(WEBVIEW2_CACHE "${FETCHCONTENT_BASE_DIR}/webview2-cache")
+    endif()
+    set(WEBVIEW2_LOCATION "${WEBVIEW2_CACHE}/${WEBVIEW2_VERSION}")
+    set(WEBVIEW2_PKG_DIR "${WEBVIEW2_LOCATION}/Microsoft.Web.WebView2.${WEBVIEW2_VERSION}")
+
+    if(NOT EXISTS "${WEBVIEW2_PKG_DIR}/build/native/include/WebView2.h")
+        message(STATUS "Downloading Microsoft.Web.WebView2 ${WEBVIEW2_VERSION}...")
+        set(WEBVIEW2_NUPKG "${WEBVIEW2_LOCATION}/webview2-${WEBVIEW2_VERSION}.zip")
+        file(MAKE_DIRECTORY "${WEBVIEW2_PKG_DIR}")
+        file(DOWNLOAD
+            "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/${WEBVIEW2_VERSION}"
+            "${WEBVIEW2_NUPKG}"
+            STATUS download_status
+            SHOW_PROGRESS
+        )
+        list(GET download_status 0 status_code)
+        list(GET download_status 1 status_message)
+        if(NOT status_code EQUAL 0)
+            message(FATAL_ERROR "Failed to download WebView2: ${status_message}")
+        endif()
+        file(ARCHIVE_EXTRACT INPUT "${WEBVIEW2_NUPKG}" DESTINATION "${WEBVIEW2_PKG_DIR}")
+        file(REMOVE "${WEBVIEW2_NUPKG}")
+        message(STATUS "WebView2 ${WEBVIEW2_VERSION} ready at ${WEBVIEW2_PKG_DIR}")
+    else()
+        message(STATUS "Using cached WebView2 ${WEBVIEW2_VERSION}")
+    endif()
+
+    set(JUCE_WEBVIEW2_PACKAGE_LOCATION "${WEBVIEW2_LOCATION}" CACHE STRING "" FORCE)
+endif()
+
+# AAX SDK: JUCE 9 bundles it; pass -DAAX_SDK_PATH=<path> to use another copy
+if(DEFINED AAX_SDK_PATH)
+    juce_set_aax_sdk_path("${AAX_SDK_PATH}")
+endif()
+
+# Plugin definition
+juce_add_plugin({{pascal_name}}
+    COMPANY_NAME "{{vendor_name}}"
+    PLUGIN_MANUFACTURER_CODE {{mfr_id}}
+    PLUGIN_CODE {{plugin_code}}
+    BUNDLE_ID "com.{{bundle_vendor}}.{{pascal_name}}"
+    LV2URI "urn:{{bundle_vendor}}:{{snake_name}}"
+
+    # Formats: CLAP added via clap-juce-extensions below. AAX builds use the SDK JUCE bundles; signing them needs Avid's tools.
+    FORMATS Standalone VST3 AU AUv3 LV2 AAX
+
+    PRODUCT_NAME "{{pascal_name}}"
+
+    # Don't auto-install to system plugin dirs - freqlab handles publishing
+    COPY_PLUGIN_AFTER_BUILD FALSE
+
+    # Plugin characteristics (effect, not synth)
+    IS_SYNTH FALSE
+    NEEDS_MIDI_INPUT FALSE
+    NEEDS_MIDI_OUTPUT FALSE
+    IS_MIDI_EFFECT FALSE
+    EDITOR_WANTS_KEYBOARD_FOCUS TRUE
+
+    # VST3 categories
+    VST3_CATEGORIES "Fx"
+
+    # WebView2 required on Windows
+    NEEDS_WEBVIEW2 TRUE
+)
+
+# Add CLAP format via clap-juce-extensions (required for freqlab preview)
+clap_juce_extensions_plugin(
+    TARGET {{pascal_name}}
+    CLAP_ID "{{clap_id}}"
+    CLAP_FEATURES "audio-effect" "stereo"
+)
+
+# Embed web resources as binary data
+juce_add_binary_data({{pascal_name}}WebResources
+    SOURCES
+        src/ui.html
+)
+
+# Source files
+target_sources({{pascal_name}}
+    PRIVATE
+        src/PluginProcessor.cpp
+        src/PluginEditor.cpp
+)
+
+# Include directories
+target_include_directories({{pascal_name}} PRIVATE src)
+
+# freqlab licensing.
+#
+# Local + cloud-unlicensed builds: FetchContent the public stub. It
+# returns Status::NoConfig, which tells the template to hide the
+# licensing UI.
+#
+# Cloud licensed builds: the orchestrator passes
+# -DCMAKE_PROJECT_INCLUDE=<sdk>/freqlab_inject.cmake which fires during
+# project() and registers the real freqlab_licensing target. The
+# `if(NOT TARGET ...)` guard prevents a duplicate-target error in
+# that case.
+#
+# To work on the licensing UI, bake a status into the stub:
+#   cmake -DFREQLAB_LICENSING_DEV_LICENSED=ON ...      # green
+#   cmake -DFREQLAB_LICENSING_DEV_EXPIRED=ON ...       # red
+#   cmake -DFREQLAB_LICENSING_DEV_NOT_ACTIVATED=ON ... # orange
+#   cmake -DFREQLAB_LICENSING_DEV_TAMPERED=ON ...      # purple
+# Don't turn these on here: they'd carry into cloud builds without
+# licensing.
+if(NOT TARGET freqlab_licensing)
+    FetchContent_Declare(
+        freqlab_licensing
+        GIT_REPOSITORY https://github.com/FreqlabHQ/freqlab-licensing
+        GIT_TAG sdk-v0.1.2
+    )
+    FetchContent_MakeAvailable(freqlab_licensing)
+endif()
+
+# Required JUCE modules (including juce_gui_extra for WebBrowserComponent)
+target_link_libraries({{pascal_name}}
+    PRIVATE
+        {{pascal_name}}WebResources
+        juce::juce_audio_utils
+        juce::juce_dsp
+        freqlab_licensing
+        juce::juce_gui_extra
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_lto_flags
+        juce::juce_recommended_warning_flags
+)
+
+# Compile definitions - enable WebView
+target_compile_definitions({{pascal_name}}
+    PUBLIC
+        JUCE_WEB_BROWSER=1
+        JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1
+        JUCE_USE_CURL=0
+        JUCE_VST3_CAN_REPLACE_VST2=0
+)
+
+# C++17
+target_compile_features({{pascal_name}} PRIVATE cxx_std_17)
+

@@ -1,0 +1,230 @@
+#include "PluginEditor.h"
+#include "freqlab_licensing.h"
+
+{{pascal_name}}Editor::{{pascal_name}}Editor({{pascal_name}}Processor& p)
+    : juce::AudioProcessorEditor(p), processorRef(p)
+{
+#if JUCE_WINDOWS
+    webViewDataFolder().createDirectory();
+
+    // Without the WebView2 runtime JUCE falls back to a browser this UI can't run in
+    if (! juce::WebBrowserComponent::areOptionsSupported(
+            juce::WebBrowserComponent::Options{}
+                .withBackend(juce::WebBrowserComponent::Options::Backend::webview2)
+                .withWinWebView2Options(juce::WebBrowserComponent::Options::WinWebView2{}
+                                            .withUserDataFolder(webViewDataFolder()))))
+    {
+        webViewMissing.setText("This plugin's window needs the Microsoft Edge WebView2 Runtime, a free "
+                               "download from Microsoft. Install it, then reopen this window. The plugin's "
+                               "sound keeps working.",
+                               juce::dontSendNotification);
+        webViewMissing.setJustificationType(juce::Justification::centred);
+        webViewMissing.setColour(juce::Label::textColourId, juce::Colours::white);
+        addAndMakeVisible(webViewMissing);
+        setSize(500, 350);
+        return;
+    }
+#endif
+
+    addAndMakeVisible(webView);
+
+    // Load UI from binary data via the resource provider hooked up
+    // in the WebBrowserComponent::Options builder in the header.
+    webView.goToURL(juce::WebBrowserComponent::getResourceProviderRoot());
+
+    // 30 Hz parameter sync (host automation to the UI)
+    startTimerHz(30);
+
+    setSize(500, 350);
+}
+
+{{pascal_name}}Editor::~{{pascal_name}}Editor()
+{
+    stopTimer();
+    // (closed mid-drag: the host's gesture still ends)
+    if (auto* param = processorRef.apvts.getParameter(openGesture))
+        param->endChangeGesture();
+}
+
+void {{pascal_name}}Editor::paint(juce::Graphics& g)
+{
+    g.fillAll(juce::Colour(0xff1a1a2e));
+}
+
+void {{pascal_name}}Editor::resized()
+{
+    webView.setBounds(getLocalBounds());
+    webViewMissing.setBounds(getLocalBounds().reduced(24));
+}
+
+void {{pascal_name}}Editor::timerCallback()
+{
+    const auto& params = processorRef.getParameters();
+    for (int i = 0; i < (int) lastSent.size() && i < params.size(); ++i)
+    {
+        auto* param = dynamic_cast<juce::RangedAudioParameter*>(params[i]);
+        if (param != nullptr && ! juce::exactlyEqual(param->getValue(), lastSent[(size_t) i]))
+        {
+            lastSent[(size_t) i] = param->getValue();
+            sendParameter(*param);
+        }
+    }
+}
+
+juce::File {{pascal_name}}Editor::webViewDataFolder()
+{
+#if JUCE_WINDOWS
+    return juce::File::getSpecialLocation(juce::File::windowsLocalAppData)
+        .getChildFile("{{bundle_vendor}}")
+        .getChildFile("{{pascal_name}}")
+        .getChildFile("WebView2");
+#else
+    return {};  // (only WebView2 uses one)
+#endif
+}
+
+std::optional<juce::WebBrowserComponent::Resource>
+{{pascal_name}}Editor::getResource(const juce::String& url)
+{
+    if (url == "/" || url == "/index.html" || url.isEmpty())
+    {
+        auto* data = reinterpret_cast<const std::byte*>(BinaryData::ui_html);
+        return juce::WebBrowserComponent::Resource{
+            std::vector<std::byte>(data, data + BinaryData::ui_htmlSize),
+            "text/html"
+        };
+    }
+    return std::nullopt;
+}
+
+// A parameter's normalized value (0 to 1) and its own display text, to the UI
+void {{pascal_name}}Editor::sendParameter(juce::RangedAudioParameter& param)
+{
+    juce::DynamicObject::Ptr obj = new juce::DynamicObject();
+    obj->setProperty("id", param.getParameterID());
+    obj->setProperty("value", param.getValue());
+    obj->setProperty("text", param.getCurrentValueAsText());
+    webView.emitEventIfBrowserIsVisible("paramChange", juce::var(obj.get()));
+}
+
+void {{pascal_name}}Editor::sendAllParameters()
+{
+    // (every value counts as changed, so all are sent now)
+    lastSent.assign((size_t) processorRef.getParameters().size(), -1.0f);
+    timerCallback();
+}
+
+void {{pascal_name}}Editor::handleLicenseActivate(const juce::var& data)
+{
+    juce::String key;
+    if (data.isObject())
+        key = data.getProperty("key", juce::String{}).toString();
+    else if (data.isString())
+        key = data.toString();
+    key = key.trim();
+
+    if (key.isEmpty())
+    {
+        {
+            std::lock_guard<std::mutex> lock(mLicenseErrorMutex);
+            mLicenseError = "Enter a license key first";
+        }
+        pushLicenseState();
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mLicenseErrorMutex);
+        mLicenseError.clear();
+    }
+    // Push a "working" state so the UI can show busy indication
+    // right away: the SDK call runs on a worker thread and may
+    // take a couple seconds against the licensing server.
+    pushLicenseState();
+
+    juce::Component::SafePointer<{{pascal_name}}Editor> safeThis(this);
+    freqlab::licensing::validateAndActivate(
+        key.toStdString(),
+        [safeThis](freqlab::licensing::LicenseInfo /*info*/) {
+            juce::MessageManager::callAsync([safeThis] {
+                if (auto* self = safeThis.getComponent())
+                {
+                    {
+                        std::lock_guard<std::mutex> lock(self->mLicenseErrorMutex);
+                        self->mLicenseError.clear();
+                    }
+                    self->pushLicenseState();
+                }
+            });
+        },
+        [safeThis](std::string err) {
+            juce::MessageManager::callAsync([safeThis, err] {
+                if (auto* self = safeThis.getComponent())
+                {
+                    {
+                        std::lock_guard<std::mutex> lock(self->mLicenseErrorMutex);
+                        self->mLicenseError = juce::String(err);
+                    }
+                    self->pushLicenseState();
+                }
+            });
+        });
+}
+
+void {{pascal_name}}Editor::handleLicenseDeactivate()
+{
+    {
+        std::lock_guard<std::mutex> lock(mLicenseErrorMutex);
+        mLicenseError.clear();
+    }
+    pushLicenseState();
+
+    juce::Component::SafePointer<{{pascal_name}}Editor> safeThis(this);
+    freqlab::licensing::deactivateThisMachine(
+        [safeThis](bool ok) {
+            juce::MessageManager::callAsync([safeThis, ok] {
+                if (auto* self = safeThis.getComponent())
+                {
+                    if (! ok)
+                    {
+                        std::lock_guard<std::mutex> lock(self->mLicenseErrorMutex);
+                        self->mLicenseError = "Deactivation failed";
+                    }
+                    self->pushLicenseState();
+                }
+            });
+        });
+}
+
+void {{pascal_name}}Editor::pushLicenseState()
+{
+    using S = freqlab::licensing::Status;
+    const auto status = freqlab::licensing::currentStatus();
+
+    juce::String statusStr;
+    switch (status)
+    {
+        case S::Licensed:     statusStr = "Licensed";     break;
+        case S::Trial:        statusStr = "Trial";        break;
+        case S::GracePeriod:  statusStr = "GracePeriod";  break;
+        case S::Overdue:      statusStr = "Overdue";      break;
+        case S::Expired:      statusStr = "Expired";      break;
+        case S::NotActivated: statusStr = "NotActivated"; break;
+        case S::Tampered:     statusStr = "Tampered";     break;
+        case S::NoConfig:     statusStr = "NoConfig";     break;
+    }
+
+    juce::String errorCopy;
+    {
+        std::lock_guard<std::mutex> lock(mLicenseErrorMutex);
+        errorCopy = mLicenseError;
+    }
+
+    juce::DynamicObject::Ptr obj = new juce::DynamicObject();
+    obj->setProperty("active", status != S::NoConfig);
+    obj->setProperty("status", statusStr);
+    if (errorCopy.isNotEmpty())
+        obj->setProperty("error", errorCopy);
+
+    webView.emitEventIfBrowserIsVisible("licenseState", juce::var(obj.get()));
+}

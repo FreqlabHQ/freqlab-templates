@@ -1,0 +1,60 @@
+#pragma once
+
+#include <juce_audio_basics/juce_audio_basics.h>
+
+/// Sound class for {{pascal_name}} synthesizer
+class {{pascal_name}}Sound : public juce::SynthesiserSound
+{
+public:
+    bool appliesToNote(int /*midiNoteNumber*/) override { return true; }
+    bool appliesToChannel(int /*midiChannel*/) override { return true; }
+};
+
+/// Voice class for {{pascal_name}} synthesizer
+class {{pascal_name}}Voice : public juce::SynthesiserVoice
+{
+public:
+    {{pascal_name}}Voice();
+
+    bool canPlaySound(juce::SynthesiserSound* sound) override;
+
+    void startNote(int midiNoteNumber, float velocity,
+                   juce::SynthesiserSound* sound,
+                   int currentPitchWheelPosition) override;
+
+    void stopNote(float velocity, bool allowTailOff) override;
+
+    void pitchWheelMoved(int newPitchWheelValue) override;
+    void controllerMoved(int controllerNumber, int newControllerValue) override;
+
+    void renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
+                         int startSample, int numSamples) override;
+    // (the double-precision overload stays the base class's)
+    using juce::SynthesiserVoice::renderNextBlock;
+
+    // Call from prepareToPlay
+    void setCurrentSampleRate(double newRate);
+
+    // Parameter setters (call from processBlock)
+    // Taken up by the next note (changing a sounding note's envelope would upset its release)
+    void setEnvelope(const juce::ADSR::Parameters& newParams) { adsrParams = newParams; }
+
+private:
+    // Oscillator state
+    double currentAngle = 0.0;
+    double angleDelta = 0.0;
+    double frequency = 0.0;
+
+    // Envelope
+    juce::ADSR adsr;
+    juce::ADSR::Parameters adsrParams{0.01f, 0.1f, 0.8f, 0.3f};
+
+    // Level control
+    float level = 0.0f;
+
+    // Base output level (~-12 dB) so 0 dB gain = comfortable listening level
+    static constexpr float baseLevel = 0.25f;
+
+    // Sample rate
+    double sampleRate = 44100.0;
+};

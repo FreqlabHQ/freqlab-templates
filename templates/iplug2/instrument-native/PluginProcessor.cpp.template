@@ -1,0 +1,152 @@
+// Defined before every include so MSVC exposes M_PI
+#define _USE_MATH_DEFINES
+#include <cmath>
+
+#include "PluginProcessor.h"
+#include "IPlug_include_in_plug_src.h"
+
+#include <algorithm>
+
+#include "freqlab_licensing.h"
+#include "freqlab_response.h"
+#include "freqlab_dsp.h"
+
+using namespace iplug;
+
+{{class_name}}::{{class_name}}(const InstanceInfo& info)
+    : iplug::Plugin(info, MakeConfig(kNumParams, 1))  // params, presets
+{
+    // Define parameters
+    GetParam(kGain)->InitDouble("Gain", 0., -30., 30., 0.1, "dB");
+
+    // Initialize cached values
+    mGain = DBToAmp(GetParam(kGain)->Value());
+
+    // Sync the SDK cache against the server when the plugin loads.
+    // refreshAsync() returns immediately and does the blocking HTTPS
+    // call on the SDK's worker thread. No-op in stub builds.
+    freqlab::licensing::refreshAsync();
+}
+
+{{class_name}}::~{{class_name}}() {
+    // Block until any in-flight SDK worker has exited so the host can
+    // safely unload the plugin dylib.  Stub builds make this a no-op.
+    freqlab::licensing::shutdown();
+}
+
+void {{class_name}}::OnReset() {
+    // A reset (processing restart, sample rate change, host reset) ends any note still sounding
+    mMidiQueue.Resize(std::max(GetBlockSize(), kMaxQueuedMidi));
+    mMidiQueue.Clear();
+    mSmoothCoeff = 1.0 - std::exp(-1.0 / (0.02 * GetSampleRate()));
+    mSmoothedGain = mGain.load();
+    mPhase = 0.0;
+    mNoteOn = false;
+    mEnvelope = 0.0;
+    // The release fade outlasts the input: the host mustn't put the plugin to sleep before it ends
+    SetTailSize(static_cast<int>(std::ceil(kReleaseSeconds * GetSampleRate())));
+}
+
+void {{class_name}}::OnParamChange(int paramIdx) {
+    switch (paramIdx) {
+        case kGain:
+            mGain = DBToAmp(GetParam(kGain)->Value());
+            break;
+    }
+}
+
+void {{class_name}}::ProcessMidiMsg(const IMidiMsg& msg) {
+    // Queued, and handled in ProcessBlock at the sample it's timed for (msg.mOffset)
+    if (mMidiQueue.ToDo() >= kMaxQueuedMidi)
+        mMidiQueue.Clear();
+    mMidiQueue.Add(msg);
+}
+
+void {{class_name}}::HandleMidi(const IMidiMsg& msg) {
+    switch (msg.StatusMsg()) {
+        case IMidiMsg::kNoteOn:
+            if (msg.Velocity() > 0) {
+                mNote = msg.NoteNumber();
+                mFreq = 440.0 * std::pow(2.0, (mNote - 69) / 12.0);
+                mTargetVelocity = msg.Velocity() / 127.0;
+                // From silence it starts at its level (the fade in covers it)
+                if (mEnvelope == 0.0)
+                    mVelocity = mTargetVelocity;
+                mNoteOn = true;
+            } else if (msg.NoteNumber() == mNote) {
+                mNoteOn = false;
+            }
+            break;
+        case IMidiMsg::kNoteOff:
+            // Only the note that's playing: releasing an earlier key leaves it sounding
+            if (msg.NoteNumber() == mNote)
+                mNoteOn = false;
+            break;
+        default:
+            break;
+    }
+}
+
+// The `@freqlab:require-license` marker tells our cloud transformer
+// to wrap this function with a license gate at build time. The inline
+// `freqlab_should_run_dsp(...)` call below makes the same gate run
+// during local development too, so the plugin silences correctly
+// without a cloud build.
+//
+// @freqlab:require-license
+void {{class_name}}::ProcessBlock(sample** /*inputs*/, sample** outputs, int nFrames) {
+    const int nChans = NOutChansConnected();
+    if (!freqlab_should_run_dsp(outputs, nChans, nFrames)) {
+        // (the skipped MIDI may hold a note's release: no note left hanging)
+        mMidiQueue.Clear();
+        mNoteOn = false;
+        mEnvelope = 0.0;
+        return;
+    }
+
+    const double sampleRate = GetSampleRate();
+    const double targetGain = mGain.load();
+
+    // A short fade in and out, so notes start and stop without a click
+    const double attackStep = 1.0 / (kAttackSeconds * sampleRate);
+    const double releaseStep = 1.0 / (kReleaseSeconds * sampleRate);
+
+    for (int s = 0; s < nFrames; s++) {
+        while (!mMidiQueue.Empty() && mMidiQueue.Peek().mOffset <= s) {
+            HandleMidi(mMidiQueue.Peek());
+            mMidiQueue.Remove();
+        }
+
+        // Glides to the knob's value, so moving it doesn't crackle
+        mSmoothedGain += mSmoothCoeff * (targetGain - mSmoothedGain);
+        const double gain = mSmoothedGain;
+        double out = 0.0;
+
+        mEnvelope = mNoteOn ? std::min(1.0, mEnvelope + attackStep) : std::max(0.0, mEnvelope - releaseStep);
+
+        // A new note's level is reached over the same short time
+        mVelocity += std::clamp(mTargetVelocity - mVelocity, -attackStep, attackStep);
+
+        if (mEnvelope > 0.0 && mFreq > 0.0) {
+            // Simple sine wave oscillator
+            out = std::sin(mPhase * 2.0 * M_PI) * mVelocity * mEnvelope * gain * kVoiceLevel;
+            mPhase += mFreq / sampleRate;
+            if (mPhase >= 1.0) mPhase -= 1.0;
+        }
+
+        if (!std::isfinite(out)) {
+            out = 0.0;
+        }
+
+        for (int c = 0; c < nChans; c++) {
+            outputs[c][s] = out;
+        }
+    }
+
+    mMidiQueue.Flush(nFrames);
+
+    // The cloud transformer injects freqlab_dsp_fold(outputs, nChans, nFrames)
+    // here; it is the identity in all licensed builds and only mangles audio
+    // in an enforced cloud build when the license is bypassed.
+    // @freqlab:dsp-fold
+}

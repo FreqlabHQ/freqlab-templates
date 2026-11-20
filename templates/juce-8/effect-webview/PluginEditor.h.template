@@ -1,0 +1,129 @@
+#pragma once
+
+#include "PluginProcessor.h"
+#include <juce_gui_extra/juce_gui_extra.h>
+#include "BinaryData.h"
+#include <mutex>
+
+/// WebView-based plugin editor for {{pascal_name}}.
+///
+/// All visible UI lives in ui.html (knob + license pill / banner /
+/// modal).  We keep the JUCE side minimal: host a WebBrowserComponent
+/// and wire up bidirectional messaging so JS can request license
+/// commands and we can push state back.
+///
+/// Why everything-in-HTML: macOS's WKWebView is a heavyweight NSView
+/// that paints on top of every lightweight JUCE component.  Mixing
+/// native pill/banner/modal components on top of the WebView leads to
+/// either invisible overlays or layout-dodging hacks.  Putting the
+/// license UI entirely in HTML sidesteps the z-order problem and
+/// keeps the editor identical to a non-licensed plugin when the SDK
+/// reports `NoConfig` (local builds without the licensing config
+/// injected).
+class {{pascal_name}}Editor : public juce::AudioProcessorEditor,
+                               private juce::Timer
+{
+public:
+    explicit {{pascal_name}}Editor({{pascal_name}}Processor&);
+    ~{{pascal_name}}Editor() override;
+
+    void paint(juce::Graphics&) override;
+    void resized() override;
+
+private:
+    void timerCallback() override;
+
+    // Serve web resources from binary data
+    std::optional<juce::WebBrowserComponent::Resource> getResource(const juce::String& url);
+
+    // Parameter sync (host automation to the UI)
+    void sendParameter(juce::RangedAudioParameter& param);
+    void sendAllParameters();
+
+    // Where WebView2 (Windows) keeps its data: a folder of this plugin's own
+    static juce::File webViewDataFolder();
+
+    // License plumbing.  Each is invoked from a thin lambda registered
+    // with the WebBrowserComponent::Options builder below; the bodies
+    // live in the .cpp so the freqlab_licensing.h include stays out
+    // of the header.
+    void handleLicenseActivate(const juce::var& data);
+    void handleLicenseDeactivate();
+    void pushLicenseState();
+
+    {{pascal_name}}Processor& processorRef;
+
+    // Last activate / deactivate error, surfaced to the UI on the
+    // next state push.  Mutex guards cross-thread writes from the
+    // SDK's worker-thread callbacks.
+    std::mutex mLicenseErrorMutex;
+    juce::String mLicenseError;
+
+    // The parameter a drag is changing, so closing the editor mid-drag can end its gesture
+    juce::String openGesture;
+
+    // WebView component - JUCE 8 API
+    juce::WebBrowserComponent webView{
+        juce::WebBrowserComponent::Options{}
+            .withBackend(juce::WebBrowserComponent::Options::Backend::webview2)
+            // (WebView2 may not be allowed its default data folder inside a DAW; without one it
+            // falls back to a browser the bridge can't use)
+            .withWinWebView2Options(juce::WebBrowserComponent::Options::WinWebView2{}
+                                        .withUserDataFolder(webViewDataFolder()))
+            .withNativeIntegrationEnabled()
+            .withResourceProvider([this](const auto& url) { return getResource(url); })
+            .withNativeFunction("setParameter", [this](const juce::Array<juce::var>& args,
+                                                       juce::WebBrowserComponent::NativeFunctionCompletion completion) {
+                // (the value is normalized, 0 to 1)
+                if (auto* param = args.size() >= 2 ? processorRef.apvts.getParameter(args[0].toString()) : nullptr)
+                    param->setValueNotifyingHost(juce::jlimit(0.0f, 1.0f, static_cast<float>(args[1])));
+                completion(juce::var());
+            })
+            // A drag is one gesture to the host, so automation records it as one move
+            .withNativeFunction("beginGesture", [this](const juce::Array<juce::var>& args,
+                                                       juce::WebBrowserComponent::NativeFunctionCompletion completion) {
+                if (auto* param = args.size() >= 1 ? processorRef.apvts.getParameter(args[0].toString()) : nullptr)
+                {
+                    param->beginChangeGesture();
+                    openGesture = args[0].toString();
+                }
+                completion(juce::var());
+            })
+            .withNativeFunction("endGesture", [this](const juce::Array<juce::var>& args,
+                                                     juce::WebBrowserComponent::NativeFunctionCompletion completion) {
+                if (auto* param = args.size() >= 1 ? processorRef.apvts.getParameter(args[0].toString()) : nullptr)
+                {
+                    param->endChangeGesture();
+                    openGesture.clear();
+                }
+                completion(juce::var());
+            })
+            .withNativeFunction("requestInit", [this](const juce::Array<juce::var>&,
+                                                      juce::WebBrowserComponent::NativeFunctionCompletion completion) {
+                sendAllParameters();
+                completion(juce::var());
+            })
+            // License commands.  JS uses `window.__JUCE__.backend.emitEvent(name, payload)`
+            // and these listeners fire on the message thread.  The
+            // pill / banner / modal are HTML overlays that hide
+            // themselves when the SDK reports Status::NoConfig (local
+            // builds without the licensing config injected).
+            .withEventListener("licenseQuery", [this](juce::var) {
+                pushLicenseState();
+            })
+            .withEventListener("licenseActivate", [this](juce::var data) {
+                handleLicenseActivate(data);
+            })
+            .withEventListener("licenseDeactivate", [this](juce::var) {
+                handleLicenseDeactivate();
+            })
+    };
+
+    // Each parameter's normalized value as last sent to the UI (empty until the page asks)
+    std::vector<float> lastSent;
+
+    // Shown instead of the UI when Windows has no WebView2
+    juce::Label webViewMissing;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR({{pascal_name}}Editor)
+};

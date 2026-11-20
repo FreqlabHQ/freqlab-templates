@@ -1,0 +1,479 @@
+use nih_plug::prelude::*;
+use nih_plug_egui::{create_egui_editor, egui, widgets, EguiState};
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// Freqlab licensing: does nothing in stub builds (Status::NoConfig),
+// so a plugin without licensing behaves as if it weren't there.
+use freqlab_licensing as licensing;
+mod freqlab_response;
+mod freqlab_dsp;
+use freqlab_response::freqlab_should_run_dsp;
+
+/// Persistent state for the license UI, threaded through
+/// `create_egui_editor`'s user_state. `last_error` is Arc<Mutex>
+/// because worker threads write to it; everything else is only
+/// touched on the GUI thread.
+#[derive(Default)]
+struct LicenseUiState {
+    key_input: String,
+    modal_open: bool,
+    busy: Arc<AtomicBool>,
+    last_error: Arc<Mutex<Option<String>>>,
+}
+
+/// How long a note takes to fade in, and to fade out once its key is up
+const ATTACK_SECONDS: f32 = 0.005;
+const RELEASE_SECONDS: f32 = 0.05;
+
+/// Base output level (-6 dB) so 0 dB gain is a comfortable listening level
+const VOICE_LEVEL: f32 = 0.5;
+
+/// {{description}}
+struct {{struct_name}} {
+    params: Arc<{{struct_name}}Params>,
+    sample_rate: f32,
+    phase: f32,
+    note_freq: f32,
+    velocity: f32,
+    /// The velocity `velocity` moves to: a note that starts while the last one fades out glides
+    /// to its level instead of jumping (a jump clicks)
+    target_velocity: f32,
+    /// The MIDI note that's playing
+    note: u8,
+    /// Whether the note is held (its key is down)
+    gate: bool,
+    /// Fade level, 0.0 (silent) to 1.0 (full): see `ATTACK_SECONDS` and `RELEASE_SECONDS`
+    envelope: f32,
+}
+
+#[derive(Params)]
+struct {{struct_name}}Params {
+    #[persist = "editor-state"]
+    editor_state: Arc<EguiState>,
+
+    #[id = "gain"]
+    pub gain: FloatParam,
+}
+
+impl Default for {{struct_name}} {
+    fn default() -> Self {
+        Self {
+            params: Arc::new({{struct_name}}Params::default()),
+            sample_rate: 44100.0,
+            phase: 0.0,
+            note_freq: 0.0,
+            velocity: 0.0,
+            target_velocity: 0.0,
+            note: 0,
+            gate: false,
+            envelope: 0.0,
+        }
+    }
+}
+
+impl Default for {{struct_name}}Params {
+    fn default() -> Self {
+        Self {
+            editor_state: EguiState::from_size(400, 300),
+            gain: FloatParam::new(
+                "Gain",
+                util::db_to_gain(0.0),
+                FloatRange::Skewed {
+                    min: util::db_to_gain(-30.0),
+                    max: util::db_to_gain(30.0),
+                    factor: FloatRange::gain_skew_factor(-30.0, 30.0),
+                },
+            )
+            .with_smoother(SmoothingStyle::Logarithmic(50.0))
+            .with_unit(" dB")
+            .with_value_to_string(formatters::v2s_f32_gain_to_db(2))
+            .with_string_to_value(formatters::s2v_f32_gain_to_db()),
+        }
+    }
+}
+
+impl {{struct_name}} {
+    fn midi_note_to_freq(note: u8) -> f32 {
+        440.0 * 2.0_f32.powf((note as f32 - 69.0) / 12.0)
+    }
+}
+
+impl Plugin for {{struct_name}} {
+    const NAME: &'static str = "{{pascal_name}}";
+    const VENDOR: &'static str = "{{vendor_name}}";
+    const URL: &'static str = "{{vendor_url}}";
+    const EMAIL: &'static str = "{{vendor_email}}";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: None,
+        main_output_channels: NonZeroU32::new(2),
+        ..AudioIOLayout::const_default()
+    }];
+
+    const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
+    // To send MIDI out: uncomment this line
+    // const MIDI_OUTPUT: MidiConfig = MidiConfig::Basic;
+
+    type SysExMessage = ();
+    type BackgroundTask = ();
+
+    fn params(&self) -> Arc<dyn Params> {
+        self.params.clone()
+    }
+
+    // A reset (processing restart, sample rate change, host reset) ends any note still sounding
+    fn reset(&mut self) {
+        self.phase = 0.0;
+        self.gate = false;
+        self.envelope = 0.0;
+    }
+
+    fn initialize(
+        &mut self,
+        _audio_io_layout: &AudioIOLayout,
+        buffer_config: &BufferConfig,
+        _context: &mut impl InitContext<Self>,
+    ) -> bool {
+        // Sync the SDK cache against the server on plugin load.
+        // refresh() blocks (disk + HTTP) so it runs on a worker
+        // thread. No-op in stub builds (returns NoConfig).
+        std::thread::spawn(|| { let _ = licensing::refresh(); });
+
+        self.sample_rate = buffer_config.sample_rate;
+        true
+    }
+
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        // Refresh when the editor opens so the UI shows the latest
+        // state from the server, not an older one. The blocking disk and
+        // HTTPS call runs on a worker; it does nothing in stub builds.
+        std::thread::spawn(|| { let _ = licensing::refresh(); });
+
+        let params = self.params.clone();
+
+        create_egui_editor(
+            self.params.editor_state.clone(),
+            LicenseUiState::default(),
+            |_, _| {},
+            move |egui_ctx, setter, state| {
+                // SDK status is a lock-free atomic read; safe to call
+                // every frame.  NoConfig means the stub is wired up
+                // but no licensing config has been injected, so we
+                // hide every license affordance.
+                let info = licensing::current();
+                let licensing_active = info.status != licensing::Status::NoConfig;
+
+                // Banner across the top for bad license states.
+                let needs_banner = matches!(
+                    info.status,
+                    licensing::Status::NotActivated
+                        | licensing::Status::Expired
+                        | licensing::Status::Tampered
+                );
+                if licensing_active && needs_banner {
+                    let (bg, copy) = match info.status {
+                        licensing::Status::NotActivated => (
+                            egui::Color32::from_rgb(70, 40, 0),
+                            "This plugin is not activated.  Click to enter your license key.",
+                        ),
+                        licensing::Status::Expired => (
+                            egui::Color32::from_rgb(70, 20, 20),
+                            "Your license has expired.  Renew to continue using this plugin.",
+                        ),
+                        licensing::Status::Tampered => (
+                            egui::Color32::from_rgb(45, 15, 70),
+                            "License could not be verified.  Please reinstall the plugin.",
+                        ),
+                        _ => (egui::Color32::TRANSPARENT, ""),
+                    };
+                    let banner = egui::TopBottomPanel::top("freqlab_license_banner")
+                        .frame(egui::Frame::new().fill(bg))
+                        .resizable(false)
+                        .exact_height(24.0);
+                    banner.show(egui_ctx, |ui| {
+                        let response = ui.allocate_response(ui.available_size(), egui::Sense::click());
+                        let rect = response.rect;
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            copy,
+                            egui::FontId::proportional(12.0),
+                            egui::Color32::from_rgb(255, 230, 200),
+                        );
+                        if response.clicked() {
+                            state.modal_open = true;
+                        }
+                    });
+                }
+
+                // Pill in the top-right corner.  Custom-painted because
+                // we want a rounded background + colored dot + label
+                // in a single clickable region.
+                if licensing_active {
+                    let (dot_colour, label) = match info.status {
+                        licensing::Status::Licensed     => (egui::Color32::from_rgb( 68, 255, 136), "Licensed"),
+                        licensing::Status::Trial        => (egui::Color32::from_rgb(102, 204, 255), "Trial"),
+                        licensing::Status::GracePeriod  => (egui::Color32::from_rgb(255, 204,  68), "Expiring soon"),
+                        licensing::Status::Overdue      => (egui::Color32::from_rgb(255, 204,  68), "Re-syncing"),
+                        licensing::Status::Expired      => (egui::Color32::from_rgb(255, 102,  85), "Expired"),
+                        licensing::Status::NotActivated => (egui::Color32::from_rgb(255, 170,  68), "Not activated"),
+                        licensing::Status::Tampered     => (egui::Color32::from_rgb(187,  85, 255), "License invalid"),
+                        licensing::Status::NoConfig     => (egui::Color32::TRANSPARENT, ""),
+                    };
+                    let area = egui::Area::new(egui::Id::new("freqlab_license_pill"))
+                        .order(egui::Order::Foreground)
+                        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, if needs_banner { 28.0 } else { 6.0 }));
+                    area.show(egui_ctx, |ui| {
+                        let desired = egui::vec2(120.0, 18.0);
+                        let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
+                        let painter = ui.painter();
+                        painter.rect_filled(rect, 9.0, egui::Color32::from_black_alpha(160));
+                        painter.rect_stroke(
+                            rect.shrink(0.5),
+                            9.0,
+                            egui::Stroke::new(1.0, dot_colour.linear_multiply(0.4)),
+                            egui::StrokeKind::Middle,
+                        );
+                        let dot_r = rect.height() * 0.28;
+                        let dot_centre = egui::pos2(rect.left() + dot_r + 6.0, rect.center().y);
+                        painter.circle_filled(dot_centre, dot_r, dot_colour);
+                        painter.text(
+                            egui::pos2(rect.left() + dot_r * 2.0 + 12.0, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            label,
+                            egui::FontId::proportional(10.0),
+                            dot_colour,
+                        );
+                        if response.clicked() {
+                            state.modal_open = true;
+                        }
+                    });
+                }
+
+                // Main UI.
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(egui::Color32::from_rgb(26, 26, 46)))
+                    .show(egui_ctx, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(20.0);
+                            ui.heading("{{pascal_name}}");
+                            ui.add_space(30.0);
+
+                            ui.horizontal(|ui| {
+                                ui.label("Gain:");
+                                ui.add(widgets::ParamSlider::for_param(&params.gain, setter));
+                            });
+                        });
+                    });
+
+                // The license panel: only after a click on the pill
+                // or banner, and only when licensing is configured.
+                if state.modal_open && licensing_active {
+                    let modal = egui::Window::new("License")
+                        .collapsible(false)
+                        .resizable(false)
+                        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                        .default_width(280.0);
+                    modal.show(egui_ctx, |ui| {
+                        let is_licensed = info.status == licensing::Status::Licensed;
+                        let busy_now = state.busy.load(Ordering::Relaxed);
+
+                        // Status pill at the top of the modal.
+                        let (status_colour, status_label) = match info.status {
+                            licensing::Status::Licensed     => (egui::Color32::from_rgb( 68, 255, 136), "LICENSED"),
+                            licensing::Status::Trial        => (egui::Color32::from_rgb(102, 204, 255), "TRIAL"),
+                            licensing::Status::GracePeriod  => (egui::Color32::from_rgb(255, 204,  68), "EXPIRING SOON"),
+                            licensing::Status::Overdue      => (egui::Color32::from_rgb(255, 204,  68), "RE-SYNCING"),
+                            licensing::Status::Expired      => (egui::Color32::from_rgb(255, 102,  85), "EXPIRED"),
+                            licensing::Status::NotActivated => (egui::Color32::from_rgb(255, 170,  68), "NOT ACTIVATED"),
+                            licensing::Status::Tampered     => (egui::Color32::from_rgb(187,  85, 255), "LICENSE INVALID"),
+                            licensing::Status::NoConfig     => (egui::Color32::GRAY, "UNKNOWN"),
+                        };
+                        ui.colored_label(
+                            status_colour,
+                            if busy_now { "WORKING..." } else { status_label },
+                        );
+                        ui.add_space(8.0);
+
+                        if !is_licensed {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.key_input)
+                                    .hint_text("XXXX-XXXX-XXXX-XXXX")
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.add_space(8.0);
+                        }
+
+                        ui.horizontal(|ui| {
+                            if !is_licensed {
+                                let activate = egui::Button::new("ACTIVATE");
+                                if ui.add_enabled(!busy_now, activate).clicked() {
+                                    let key = state.key_input.trim().to_string();
+                                    if key.is_empty() {
+                                        if let Ok(mut slot) = state.last_error.lock() {
+                                            *slot = Some("Enter a license key first".to_string());
+                                        }
+                                    } else {
+                                        state.busy.store(true, Ordering::Relaxed);
+                                        let busy = state.busy.clone();
+                                        let err = state.last_error.clone();
+                                        std::thread::spawn(move || {
+                                            let result = licensing::validate_and_activate(&key);
+                                            if let Ok(mut slot) = err.lock() {
+                                                *slot = result.err().map(|e| format!("{}", e));
+                                            }
+                                            busy.store(false, Ordering::Relaxed);
+                                        });
+                                    }
+                                }
+                            }
+                            let deactivate = egui::Button::new("DEACTIVATE");
+                            let allow_deact = !busy_now
+                                && info.status != licensing::Status::NotActivated
+                                && info.status != licensing::Status::NoConfig;
+                            if ui.add_enabled(allow_deact, deactivate).clicked() {
+                                state.busy.store(true, Ordering::Relaxed);
+                                let busy = state.busy.clone();
+                                let err = state.last_error.clone();
+                                std::thread::spawn(move || {
+                                    let result = licensing::deactivate_this_machine();
+                                    if let Ok(mut slot) = err.lock() {
+                                        *slot = result.err().map(|e| format!("{}", e));
+                                    }
+                                    busy.store(false, Ordering::Relaxed);
+                                });
+                            }
+                            if ui.button("Close").clicked() {
+                                state.modal_open = false;
+                            }
+                        });
+
+                        // Error line below the buttons.
+                        if let Ok(slot) = state.last_error.lock() {
+                            if let Some(err) = slot.as_ref() {
+                                ui.add_space(4.0);
+                                ui.colored_label(egui::Color32::from_rgb(255, 102, 136), err);
+                            }
+                        }
+                    });
+                }
+            },
+        )
+    }
+
+    // The `@freqlab:require-license` marker tells our cloud
+    // transformer to wrap this function with a license gate at
+    // build time. The inline `freqlab_should_run_dsp(buffer)`
+    // call below makes the same gate run during local development
+    // too, so the plugin silences correctly without a cloud build.
+    //
+    // @freqlab:require-license
+    fn process(
+        &mut self,
+        buffer: &mut Buffer,
+        _aux: &mut AuxiliaryBuffers,
+        context: &mut impl ProcessContext<Self>,
+    ) -> ProcessStatus {
+        if !freqlab_should_run_dsp(buffer) {
+            // (this block's MIDI is skipped, maybe a note's release: no note left hanging)
+            self.gate = false;
+            self.envelope = 0.0;
+            return ProcessStatus::Normal;
+        }
+
+        // MIDI events land on the sample they're timed for, not the start of the block
+        let mut next_event = context.next_event();
+        for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
+            while let Some(event) = next_event {
+                if event.timing() > sample_id as u32 {
+                    break;
+                }
+                match event {
+                    NoteEvent::NoteOn { note, velocity, .. } => {
+                        self.note = note;
+                        self.note_freq = Self::midi_note_to_freq(note);
+                        self.target_velocity = velocity;
+                        // From silence it starts at its level (the fade in covers it)
+                        if self.envelope == 0.0 {
+                            self.velocity = velocity;
+                        }
+                        self.gate = true;
+                    }
+                    // Only release the note that's playing
+                    NoteEvent::NoteOff { note, .. } if note == self.note => {
+                        self.gate = false;
+                    }
+                    // The host wants the note silent at once (no release)
+                    NoteEvent::Choke { note, .. } if note == self.note => {
+                        self.gate = false;
+                        self.envelope = 0.0;
+                    }
+                    _ => {}
+                }
+                next_event = context.next_event();
+            }
+
+            // A short fade in and out, so notes start and stop without a click
+            let step = if self.gate {
+                1.0 / (ATTACK_SECONDS * self.sample_rate)
+            } else {
+                -1.0 / (RELEASE_SECONDS * self.sample_rate)
+            };
+            self.envelope = (self.envelope + step).clamp(0.0, 1.0);
+            // A new note's level is reached over the same short time
+            let glide = 1.0 / (ATTACK_SECONDS * self.sample_rate);
+            self.velocity += (self.target_velocity - self.velocity).clamp(-glide, glide);
+
+            let gain = self.params.gain.smoothed.next();
+            // Simple sine wave oscillator
+            let sample = if self.envelope > 0.0 {
+                let sine = (self.phase * std::f32::consts::TAU).sin();
+                self.phase = (self.phase + self.note_freq / self.sample_rate) % 1.0;
+                sine * self.velocity * self.envelope * gain * VOICE_LEVEL
+            } else {
+                0.0
+            };
+
+            for output_sample in channel_samples {
+                // Protect against NaN/Inf (can crash DAWs)
+                *output_sample = if sample.is_finite() { sample } else { 0.0 };
+            }
+        }
+
+        // The cloud transformer injects freqlab_dsp_fold(buffer) here; it is the
+        // identity in all licensed builds and only mangles audio in an enforced
+        // cloud build when the license is bypassed.
+        // @freqlab:dsp-fold
+
+        ProcessStatus::Normal
+    }
+}
+
+impl Drop for {{struct_name}} {
+    fn drop(&mut self) {
+        // Flip the SDK's cancellation flag so any in-flight refresh /
+        // activate / deactivate worker bails at its next checkpoint
+        // before the host unloads us.  This template fires-and-forgets
+        // its workers; a plugin that stores JoinHandles should also
+        // `.join()` them here after calling `shutdown()`.
+        licensing::shutdown();
+    }
+}
+
+impl ClapPlugin for {{struct_name}} {
+    const CLAP_ID: &'static str = "{{clap_id}}";
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("{{description}}");
+    const CLAP_MANUAL_URL: Option<&'static str> = None;
+    const CLAP_SUPPORT_URL: Option<&'static str> = None;
+    const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::Instrument, ClapFeature::Synthesizer, ClapFeature::Stereo];
+}
+
+impl Vst3Plugin for {{struct_name}} {
+    const VST3_CLASS_ID: [u8; 16] = *b"{{vst3_id}}";
+    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[Vst3SubCategory::Synth, Vst3SubCategory::Instrument];
+}
+
+nih_export_clap!({{struct_name}});
+nih_export_vst3!({{struct_name}});

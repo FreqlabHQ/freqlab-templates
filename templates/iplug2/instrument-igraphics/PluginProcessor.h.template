@@ -1,0 +1,56 @@
+#pragma once
+
+#include "IPlug_include_in_plug_hdr.h"
+
+#include <atomic>
+#include "IControls.h"
+
+// Parameter indices
+enum EParams {
+    kGain = 0,
+    kNumParams
+};
+
+class {{class_name}} final : public iplug::Plugin {
+public:
+    {{class_name}}(const iplug::InstanceInfo& info);
+    ~{{class_name}}() override;
+
+    void OnReset() override;
+    void OnParamChange(int paramIdx) override;
+    void ProcessBlock(iplug::sample** inputs, iplug::sample** outputs, int nFrames) override;
+    void ProcessMidiMsg(const iplug::IMidiMsg& msg) override;
+
+#if IPLUG_EDITOR
+    iplug::igraphics::IGraphics* CreateGraphics() override;
+    void LayoutUI(iplug::igraphics::IGraphics* pGraphics) override;
+#endif
+
+private:
+    // The gain knob, in amplitude: written from the host or UI thread, read on the audio thread
+    std::atomic<double> mGain{1.0};
+    double mSmoothedGain = 1.0;
+    double mSmoothCoeff = 0.001;
+
+    // MIDI waiting for its sample in the block (see ProcessMidiMsg)
+    iplug::IMidiQueue mMidiQueue;
+    static constexpr int kMaxQueuedMidi = 1024;
+    void HandleMidi(const iplug::IMidiMsg& msg);
+
+    // Simple oscillator state
+    double mPhase = 0.0;
+    double mFreq = 0.0;
+    double mVelocity = 0.0;
+    // The velocity mVelocity moves to: a note that starts while the last one fades out glides to
+    // its level instead of jumping (a jump clicks)
+    double mTargetVelocity = 0.0;
+    bool mNoteOn = false;
+    int mNote = -1;
+    // Fade level, 0 (silent) to 1 (full); a note fades in over kAttackSeconds and out over
+    // kReleaseSeconds once its key is up
+    double mEnvelope = 0.0;
+    static constexpr double kAttackSeconds = 0.005;
+    static constexpr double kReleaseSeconds = 0.05;
+    // Base output level (-6 dB) so 0 dB gain is a comfortable listening level
+    static constexpr double kVoiceLevel = 0.5;
+};

@@ -1,0 +1,210 @@
+cmake_minimum_required(VERSION 3.22)
+# Toolchain settings go before project(). The cloud build
+# injects the licensing SDK via -DCMAKE_PROJECT_INCLUDE during
+# project(), and anything set after project() does not apply to
+# the SDK. See freqlab-licensing/README.md.
+
+if(WIN32)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE INTERNAL "")
+endif()
+
+if(APPLE)
+    # 10.15 (Catalina), for the licensing SDK's std::filesystem use.
+    # (macOS 10.15, not 15: Apple kept 10.x numbering through 2020.)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS version")
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Universal binary")
+endif()
+
+project({{pascal_name}} VERSION 1.0.0)
+
+# Emit compile_commands.json so clangd (LSP) can resolve include paths
+# without a custom configuration. Ignored by build; only used by editors.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Allow FetchContent_Populate for selective dependency handling
+if(POLICY CMP0169)
+    cmake_policy(SET CMP0169 OLD)
+endif()
+
+# Fetch dependencies
+include(FetchContent)
+
+# CLAP SDK
+FetchContent_Declare(
+    clap
+    GIT_REPOSITORY https://github.com/free-audio/clap.git
+    GIT_TAG 1.2.10
+)
+
+# CLAP helpers
+FetchContent_Declare(
+    clap-helpers
+    GIT_REPOSITORY https://github.com/free-audio/clap-helpers.git
+    GIT_TAG a380c978f429103e08afc1d17e9efbf3e3c96ee2 # main as of 2026-10-18; must match the CLAP SDK version
+)
+
+# VST3 SDK
+FetchContent_Declare(
+    vst3sdk
+    GIT_REPOSITORY https://github.com/steinbergmedia/vst3sdk.git
+    GIT_TAG v3.7.11_build_10
+)
+
+# iPlug2
+FetchContent_Declare(
+    iPlug2
+    GIT_REPOSITORY https://github.com/iPlug2/iPlug2.git
+    GIT_TAG 39ea73aafe6f62fa0b52b9c633d2a480f5abb353 # master as of 2026-10-18
+)
+
+# Populate CLAP SDK and helpers
+FetchContent_MakeAvailable(clap clap-helpers)
+
+# Populate VST3 SDK (don't add as subdirectory)
+FetchContent_GetProperties(vst3sdk)
+if(NOT vst3sdk_POPULATED)
+    FetchContent_Populate(vst3sdk)
+endif()
+
+# Populate iPlug2 (don't add subdirectory - skip examples/tests)
+FetchContent_GetProperties(iPlug2)
+if(NOT iplug2_POPULATED)
+    FetchContent_Populate(iPlug2)
+endif()
+
+# Set up SDK paths for iPlug2
+set(IPLUG_DEPS_DIR ${iplug2_SOURCE_DIR}/Dependencies/IPlug CACHE PATH "" FORCE)
+file(MAKE_DIRECTORY ${IPLUG_DEPS_DIR}/CLAP_SDK)
+file(MAKE_DIRECTORY ${IPLUG_DEPS_DIR}/CLAP_HELPERS)
+file(MAKE_DIRECTORY ${IPLUG_DEPS_DIR}/VST3_SDK)
+
+# Link iPlug2's SDK folders to this project's SDKs. The iPlug2 source can be shared with other
+# projects pinning other SDK versions, so a link pointing elsewhere is pointed here again.
+function(freqlab_link_sdk target link)
+    if(IS_SYMLINK "${link}")
+        file(READ_SYMLINK "${link}" current)
+        if(current STREQUAL target)
+            return()
+        endif()
+        file(REMOVE "${link}")
+    elseif(EXISTS "${link}")
+        return()
+    endif()
+    file(CREATE_LINK "${target}" "${link}" SYMBOLIC)
+endfunction()
+freqlab_link_sdk(${clap_SOURCE_DIR}/include ${IPLUG_DEPS_DIR}/CLAP_SDK/include)
+freqlab_link_sdk(${clap-helpers_SOURCE_DIR}/include ${IPLUG_DEPS_DIR}/CLAP_HELPERS/include)
+freqlab_link_sdk(${vst3sdk_SOURCE_DIR}/base ${IPLUG_DEPS_DIR}/VST3_SDK/base)
+freqlab_link_sdk(${vst3sdk_SOURCE_DIR}/pluginterfaces ${IPLUG_DEPS_DIR}/VST3_SDK/pluginterfaces)
+freqlab_link_sdk(${vst3sdk_SOURCE_DIR}/public.sdk ${IPLUG_DEPS_DIR}/VST3_SDK/public.sdk)
+# The links keep their paths across SDK versions, so the SDKs in use go in every target's flags:
+# another version recompiles what includes them.
+string(MD5 freqlab_sdks "${clap_SOURCE_DIR}|${clap-helpers_SOURCE_DIR}|${vst3sdk_SOURCE_DIR}")
+add_compile_definitions(FREQLAB_SDKS=${freqlab_sdks})
+
+# AAX SDK (optional - pass -DAAX_SDK_PATH=<path> to enable AAX builds). iPlug2 builds AAX
+# from the SDK folder AAX_SDK_DIR names, when it holds the SDK's CMakeLists.txt.
+if(DEFINED AAX_SDK_PATH AND EXISTS "${AAX_SDK_PATH}/CMakeLists.txt")
+    set(AAX_SDK_DIR "${AAX_SDK_PATH}")
+endif()
+
+# Set up iPlug2 CMake module
+set(IPLUG2_DIR ${iplug2_SOURCE_DIR} CACHE PATH "iPlug2 root directory" FORCE)
+include(${IPLUG2_DIR}/iPlug2.cmake)
+
+# Don't auto-install to system plugin dirs - freqlab handles publishing
+set(IPLUG_DEPLOY_PLUGINS OFF CACHE BOOL "" FORCE)
+
+find_package(iPlug2 REQUIRED)
+
+# freqlab licensing.
+#
+# Cloud licensed builds inject the real SDK via CMAKE_PROJECT_INCLUDE
+# during project(); the guard avoids a duplicate-target error. Local +
+# cloud-unlicensed builds FetchContent the stub, which reports
+# Status::NoConfig, which tells the template to hide the licensing UI.
+# Dev flags: -DFREQLAB_LICENSING_DEV_LICENSED=ON (and EXPIRED /
+# NOT_ACTIVATED / TAMPERED) show each UI state locally. Don't turn
+# these on here.
+if(NOT TARGET freqlab_licensing)
+    include(FetchContent)
+    FetchContent_Declare(
+        freqlab_licensing
+        GIT_REPOSITORY https://github.com/FreqlabHQ/freqlab-licensing
+        GIT_TAG sdk-v0.1.2
+    )
+    FetchContent_MakeAvailable(freqlab_licensing)
+endif()
+
+# Create plugin targets with IGraphics UI
+iplug_add_plugin(${PROJECT_NAME}
+    SOURCES
+        src/PluginProcessor.cpp
+        src/PluginProcessor.h
+        src/LicenseUI.h
+        src/freqlab_response.h
+        config.h
+        resource.h
+    FORMATS VST3 CLAP AU APP AUV3 AAX
+    UI IGRAPHICS
+)
+
+# Suppress warnings from iPlug2 upstream code (VLA extensions in RtAudio/RtMidi/SWELL/AUv2,
+# incomplete switch in SWELL) - these are in iPlug2's own sources, not user code
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+    foreach(_target ${PROJECT_NAME}-app ${PROJECT_NAME}-vst3 ${PROJECT_NAME}-clap ${PROJECT_NAME}-au)
+        if(TARGET ${_target})
+            target_compile_options(${_target} PRIVATE -Wno-vla-cxx-extension -Wno-switch)
+        endif()
+    endforeach()
+endif()
+
+# Link freqlab licensing into every plugin-shaped target. iPlug2 creates
+# one target per format ({name}-vst3, -clap, -app, -au, -aax, and
+# {name}AU-framework for AUv3); link to whichever exist in this configuration.
+foreach(_target ${PROJECT_NAME}-app ${PROJECT_NAME}-vst3 ${PROJECT_NAME}-clap ${PROJECT_NAME}-au ${PROJECT_NAME}-aax ${PROJECT_NAME}AU-framework)
+    if(TARGET ${_target})
+        target_link_libraries(${_target} PRIVATE freqlab_licensing)
+    endif()
+endforeach()
+
+# Hot reload support: Override OBJC_PREFIX with unique per-build suffix
+# so Objective-C class names differ between builds and a reload doesn't clash
+# (Obj-C classes stay registered after dlclose)
+if(APPLE)
+    # Read unique suffix from environment variable (set by freqlab build system)
+    if(DEFINED ENV{IPLUG_BUILD_SUFFIX})
+        set(IPLUG_BUILD_SUFFIX "$ENV{IPLUG_BUILD_SUFFIX}")
+    else()
+        # Fallback to configure-time timestamp for manual builds
+        string(TIMESTAMP IPLUG_BUILD_SUFFIX "%s")
+    endif()
+
+    # Override OBJC_PREFIX for CLAP target (used for hot reload in freqlab)
+    # Remove iPlug2's default OBJC_PREFIX first, then add our suffixed version
+    if(TARGET ${PROJECT_NAME}-clap)
+        get_target_property(_clap_defs ${PROJECT_NAME}-clap COMPILE_DEFINITIONS)
+        if(_clap_defs)
+            list(FILTER _clap_defs EXCLUDE REGEX "^OBJC_PREFIX=")
+            set_target_properties(${PROJECT_NAME}-clap PROPERTIES COMPILE_DEFINITIONS "${_clap_defs}")
+        endif()
+        target_compile_definitions(${PROJECT_NAME}-clap PRIVATE
+            OBJC_PREFIX=v${PROJECT_NAME}_${IPLUG_BUILD_SUFFIX}
+        )
+        message(STATUS "CLAP hot reload: OBJC_PREFIX=v${PROJECT_NAME}_${IPLUG_BUILD_SUFFIX}")
+    else()
+        message(WARNING "CLAP target ${PROJECT_NAME}-clap not found for hot reload")
+    endif()
+
+    # NanoVG Metal classes come from an iPlug2 object library built without the prefix header
+    if(TARGET iPlug2_IGraphics_NanoVG_Metal_obj)
+        target_compile_options(iPlug2_IGraphics_NanoVG_Metal_obj PRIVATE
+            "SHELL:-include ${IPLUG2_DIR}/IPlug/IPlugOBJCPrefix.pch"
+        )
+        target_compile_definitions(iPlug2_IGraphics_NanoVG_Metal_obj PRIVATE
+            OBJC_PREFIX=v${PROJECT_NAME}_${IPLUG_BUILD_SUFFIX}
+        )
+    elseif(IGRAPHICS_RENDERER STREQUAL "METAL" OR NOT DEFINED IGRAPHICS_RENDERER)
+        message(WARNING "iPlug2 NanoVG Metal library not found for hot reload")
+    endif()
+endif()

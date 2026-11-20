@@ -1,0 +1,77 @@
+// freqlab_dsp.rs - opt-in DSP-fold (anti-tamper).
+//
+// Optional: it only runs where a `// @freqlab:dsp-fold` tag sits in your DSP
+// (the Starter has one), with this file kept in your project. The Freqlab cloud
+// build puts a call to `freqlab_dsp_fold(buffer)` at that tag.
+//
+// freqlab_dsp_coefficient() is the identity (gain 1.0) in local builds, licensed
+// cloud builds, and shadow-mode builds, so the audio is left untouched. It only
+// moves off 1.0 in an enforced cloud build when the license is bypassed or
+// invalid, and this helper then makes the audio clearly broken.
+//
+// Both functions are lock-free and safe to call from the audio thread.
+
+// Unused in local builds: the cloud build adds the call at the tag.
+#![allow(dead_code)]
+
+use freqlab_licensing::{freqlab_dsp_coefficient, FREQLAB_DSP_IDENTITY};
+use nih_plug::prelude::Buffer;
+use std::cell::Cell;
+
+// The fold coefficient as a gain multiplier: 1.0 when licensed, ~0.25..0.7 when
+// bypassed (in an enforced build).
+#[inline]
+pub fn freqlab_dsp_gain() -> f32 {
+    (freqlab_dsp_coefficient() as f64 / FREQLAB_DSP_IDENTITY as f64) as f32
+}
+
+thread_local! {
+    // Audio-thread-local state for the noise + stutter. const-initialized, so
+    // no lock and no allocation - safe in the render callback.
+    static RNG: Cell<u32> = const { Cell::new(0x9E37_79B9) };
+    static PHASE: Cell<u32> = const { Cell::new(0) };
+}
+
+// The transformer injects a call to this at your `// @freqlab:dsp-fold` tag.
+//
+// Licensed (or a shadow build): the audio is left bit-exact. Bypassed in an
+// enforced build: the output is made clearly broken (overdrive, bitcrush, noise
+// and stutter), so a cracked copy is unusable. Safe for speakers: every sample
+// is clamped to +/-0.7 (never above -3 dBFS), so it can't go full-scale or DC.
+pub fn freqlab_dsp_fold(buffer: &mut Buffer) {
+    let g = freqlab_dsp_gain();
+    if g > 0.98 {
+        return; // licensed / shadow: leave the audio completely untouched
+    }
+
+    let mut rng = RNG.get();
+    let mut phase = PHASE.get();
+
+    for channel in buffer.as_slice().iter_mut() {
+        for sample in channel.iter_mut() {
+            let mut s = *sample;
+
+            // 1. Heavy overdrive: a harsh, squared-off tone.
+            s = (s * 18.0).tanh();
+            // 2. Bitcrush down to a few steps.
+            s = (s * 6.0).round() / 6.0;
+            // 3. Heavy noise (fast xorshift PRNG).
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            let noise = rng as f32 / 2_147_483_648.0 - 1.0; // ~[-1,1)
+            s = s * 0.7 + noise * 0.5;
+            // 4. Stutter: chop chunks to silence so it also glitches.
+            phase = phase.wrapping_add(1);
+            if (phase & 0x1FF) < 0x80 {
+                s = 0.0;
+            }
+
+            // 5. Speaker-safe clamp: never past -3 dBFS, never DC.
+            *sample = s.clamp(-0.7, 0.7);
+        }
+    }
+
+    RNG.set(rng);
+    PHASE.set(phase);
+}

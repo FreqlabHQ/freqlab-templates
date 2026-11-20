@@ -1,0 +1,248 @@
+use nih_plug::prelude::*;
+use std::sync::Arc;
+
+// Freqlab licensing: does nothing in stub builds (Status::NoConfig),
+// so a plugin without licensing behaves as if it weren't there.
+use freqlab_licensing as licensing;
+mod freqlab_response;
+mod freqlab_dsp;
+use freqlab_response::freqlab_should_run_dsp;
+
+/// How long a note takes to fade in, and to fade out once its key is up
+const ATTACK_SECONDS: f32 = 0.005;
+const RELEASE_SECONDS: f32 = 0.05;
+
+/// Base output level (-6 dB) so 0 dB gain is a comfortable listening level
+const VOICE_LEVEL: f32 = 0.5;
+
+/// {{description}}
+struct {{struct_name}} {
+    params: Arc<{{struct_name}}Params>,
+    sample_rate: f32,
+    /// Current phase of the oscillator (0.0 to 1.0)
+    phase: f32,
+    /// Current note frequency (0 if no note playing)
+    note_freq: f32,
+    /// Current note velocity (0.0 to 1.0)
+    velocity: f32,
+    /// The velocity `velocity` moves to: a note that starts while the last one fades out glides
+    /// to its level instead of jumping (a jump clicks)
+    target_velocity: f32,
+    /// The MIDI note that's playing
+    note: u8,
+    /// Whether the note is held (its key is down)
+    gate: bool,
+    /// Fade level, 0.0 (silent) to 1.0 (full): see `ATTACK_SECONDS` and `RELEASE_SECONDS`
+    envelope: f32,
+}
+
+#[derive(Params)]
+struct {{struct_name}}Params {
+    #[id = "gain"]
+    pub gain: FloatParam,
+}
+
+impl Default for {{struct_name}} {
+    fn default() -> Self {
+        Self {
+            params: Arc::new({{struct_name}}Params::default()),
+            sample_rate: 44100.0,
+            phase: 0.0,
+            note_freq: 0.0,
+            velocity: 0.0,
+            target_velocity: 0.0,
+            note: 0,
+            gate: false,
+            envelope: 0.0,
+        }
+    }
+}
+
+impl Default for {{struct_name}}Params {
+    fn default() -> Self {
+        Self {
+            gain: FloatParam::new(
+                "Gain",
+                util::db_to_gain(0.0),
+                FloatRange::Skewed {
+                    min: util::db_to_gain(-30.0),
+                    max: util::db_to_gain(30.0),
+                    factor: FloatRange::gain_skew_factor(-30.0, 30.0),
+                },
+            )
+            .with_smoother(SmoothingStyle::Logarithmic(50.0))
+            .with_unit(" dB")
+            .with_value_to_string(formatters::v2s_f32_gain_to_db(2))
+            .with_string_to_value(formatters::s2v_f32_gain_to_db()),
+        }
+    }
+}
+
+impl {{struct_name}} {
+    /// Convert MIDI note number to frequency in Hz
+    fn midi_note_to_freq(note: u8) -> f32 {
+        440.0 * 2.0_f32.powf((note as f32 - 69.0) / 12.0)
+    }
+}
+
+impl Plugin for {{struct_name}} {
+    const NAME: &'static str = "{{pascal_name}}";
+    const VENDOR: &'static str = "{{vendor_name}}";
+    const URL: &'static str = "{{vendor_url}}";
+    const EMAIL: &'static str = "{{vendor_email}}";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+    // Instrument: no audio input, stereo output
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: None,
+        main_output_channels: NonZeroU32::new(2),
+        ..AudioIOLayout::const_default()
+    }];
+
+    const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
+    // To send MIDI out: uncomment this line
+    // const MIDI_OUTPUT: MidiConfig = MidiConfig::Basic;
+
+    type SysExMessage = ();
+    type BackgroundTask = ();
+
+    fn params(&self) -> Arc<dyn Params> {
+        self.params.clone()
+    }
+
+    // A reset (processing restart, sample rate change, host reset) ends any note still sounding
+    fn reset(&mut self) {
+        self.phase = 0.0;
+        self.gate = false;
+        self.envelope = 0.0;
+    }
+
+    fn initialize(
+        &mut self,
+        _audio_io_layout: &AudioIOLayout,
+        buffer_config: &BufferConfig,
+        _context: &mut impl InitContext<Self>,
+    ) -> bool {
+        // Sync the SDK cache against the server on plugin load.
+        // refresh() blocks (disk + HTTP) so it runs on a worker
+        // thread. No-op in stub builds (returns NoConfig).
+        std::thread::spawn(|| { let _ = licensing::refresh(); });
+
+        self.sample_rate = buffer_config.sample_rate;
+        true
+    }
+
+    // The `@freqlab:require-license` marker tells our cloud
+    // transformer to wrap this function with a license gate at
+    // build time. The inline `freqlab_should_run_dsp(buffer)`
+    // call below makes the same gate run during local development
+    // too, so the plugin silences correctly without a cloud build.
+    //
+    // @freqlab:require-license
+    fn process(
+        &mut self,
+        buffer: &mut Buffer,
+        _aux: &mut AuxiliaryBuffers,
+        context: &mut impl ProcessContext<Self>,
+    ) -> ProcessStatus {
+        if !freqlab_should_run_dsp(buffer) {
+            // (this block's MIDI is skipped, maybe a note's release: no note left hanging)
+            self.gate = false;
+            self.envelope = 0.0;
+            return ProcessStatus::Normal;
+        }
+
+        // MIDI events land on the sample they're timed for, not the start of the block
+        let mut next_event = context.next_event();
+        for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
+            while let Some(event) = next_event {
+                if event.timing() > sample_id as u32 {
+                    break;
+                }
+                match event {
+                    NoteEvent::NoteOn { note, velocity, .. } => {
+                        self.note = note;
+                        self.note_freq = Self::midi_note_to_freq(note);
+                        self.target_velocity = velocity;
+                        // From silence it starts at its level (the fade in covers it)
+                        if self.envelope == 0.0 {
+                            self.velocity = velocity;
+                        }
+                        self.gate = true;
+                    }
+                    // Only release the note that's playing
+                    NoteEvent::NoteOff { note, .. } if note == self.note => {
+                        self.gate = false;
+                    }
+                    // The host wants the note silent at once (no release)
+                    NoteEvent::Choke { note, .. } if note == self.note => {
+                        self.gate = false;
+                        self.envelope = 0.0;
+                    }
+                    _ => {}
+                }
+                next_event = context.next_event();
+            }
+
+            // A short fade in and out, so notes start and stop without a click
+            let step = if self.gate {
+                1.0 / (ATTACK_SECONDS * self.sample_rate)
+            } else {
+                -1.0 / (RELEASE_SECONDS * self.sample_rate)
+            };
+            self.envelope = (self.envelope + step).clamp(0.0, 1.0);
+            // A new note's level is reached over the same short time
+            let glide = 1.0 / (ATTACK_SECONDS * self.sample_rate);
+            self.velocity += (self.target_velocity - self.velocity).clamp(-glide, glide);
+
+            let gain = self.params.gain.smoothed.next();
+            // Simple sine wave oscillator
+            let sample = if self.envelope > 0.0 {
+                let sine = (self.phase * std::f32::consts::TAU).sin();
+                self.phase = (self.phase + self.note_freq / self.sample_rate) % 1.0;
+                sine * self.velocity * self.envelope * gain * VOICE_LEVEL
+            } else {
+                0.0
+            };
+
+            for output_sample in channel_samples {
+                // Protect against NaN/Inf (can crash DAWs)
+                *output_sample = if sample.is_finite() { sample } else { 0.0 };
+            }
+        }
+
+        // The cloud transformer injects freqlab_dsp_fold(buffer) here; it is the
+        // identity in all licensed builds and only mangles audio in an enforced
+        // cloud build when the license is bypassed.
+        // @freqlab:dsp-fold
+
+        ProcessStatus::Normal
+    }
+}
+
+impl Drop for {{struct_name}} {
+    fn drop(&mut self) {
+        // Flip the SDK's cancellation flag so any in-flight refresh /
+        // activate / deactivate worker bails at its next checkpoint
+        // before the host unloads us.  This template fires-and-forgets
+        // its workers; a plugin that stores JoinHandles should also
+        // `.join()` them here after calling `shutdown()`.
+        licensing::shutdown();
+    }
+}
+
+impl ClapPlugin for {{struct_name}} {
+    const CLAP_ID: &'static str = "{{clap_id}}";
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("{{description}}");
+    const CLAP_MANUAL_URL: Option<&'static str> = None;
+    const CLAP_SUPPORT_URL: Option<&'static str> = None;
+    const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::Instrument, ClapFeature::Synthesizer, ClapFeature::Stereo];
+}
+
+impl Vst3Plugin for {{struct_name}} {
+    const VST3_CLASS_ID: [u8; 16] = *b"{{vst3_id}}";
+    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[Vst3SubCategory::Synth, Vst3SubCategory::Instrument];
+}
+
+nih_export_clap!({{struct_name}});
+nih_export_vst3!({{struct_name}});

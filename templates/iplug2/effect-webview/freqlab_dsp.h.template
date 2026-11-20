@@ -1,0 +1,71 @@
+#pragma once
+
+// freqlab_dsp.h - opt-in DSP-fold (anti-tamper).
+//
+// Optional: it only runs where a `// @freqlab:dsp-fold` tag sits in your DSP
+// (the Starter has one), with this file kept in your project. The Freqlab cloud
+// build puts a call to `freqlab_dsp_fold(outputs, nChans, nFrames)` at that tag.
+//
+// freqlab_dsp_coefficient() is the identity (gain 1.0) in local builds, licensed
+// cloud builds, and shadow-mode builds, so the audio is left untouched. It only
+// moves off 1.0 in an enforced cloud build when the license is bypassed or
+// invalid, and this helper then makes the audio clearly broken.
+//
+// Both functions are lock-free and safe to call from the audio thread.
+
+#include "freqlab_licensing.h"
+#include "IPlug_include_in_plug_hdr.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+
+// The fold coefficient as a gain multiplier: 1.0 when licensed, ~0.25..0.7 when
+// bypassed (in an enforced build).
+inline float freqlab_dsp_gain()
+{
+    return static_cast<float>(
+        static_cast<double>(::freqlab::licensing::freqlab_dsp_coefficient()) /
+        static_cast<double>(::freqlab::licensing::FREQLAB_DSP_IDENTITY));
+}
+
+// The transformer injects a call to this at your `// @freqlab:dsp-fold` tag.
+//
+// Licensed (or a shadow build): the audio is left bit-exact. Bypassed in an
+// enforced build: the output is made clearly broken (overdrive, bitcrush, noise
+// and stutter), so a cracked copy is unusable. Safe for speakers: every sample
+// is clamped to +/-0.7 (never above -3 dBFS), so it can't go full-scale, DC, or NaN.
+inline void freqlab_dsp_fold(iplug::sample** outputs, int nChans, int nFrames)
+{
+    const double g = static_cast<double>(freqlab_dsp_gain());
+    if (g > 0.98)  // licensed / shadow: leave the audio completely untouched
+        return;
+
+    // Audio-thread-local state for the noise + stutter. Constant-initialized, so
+    // no lock and no allocation - safe in the render callback.
+    static thread_local std::uint32_t rng = 0x9E3779B9u;
+    static thread_local std::uint32_t phase = 0;
+
+    for (int ch = 0; ch < nChans; ++ch)
+    {
+        iplug::sample* data = outputs[ch];
+        for (int i = 0; i < nFrames; ++i)
+        {
+            double s = data[i];
+
+            // 1. Heavy overdrive: a harsh, squared-off tone.
+            s = std::tanh(s * 18.0);
+            // 2. Bitcrush down to a few steps.
+            s = std::round(s * 6.0) / 6.0;
+            // 3. Heavy noise (fast xorshift PRNG).
+            rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+            const double noise = static_cast<double>(rng) / 2147483648.0 - 1.0; // ~[-1,1)
+            s = s * 0.7 + noise * 0.5;
+            // 4. Stutter: chop chunks to silence so it also glitches.
+            if ((++phase & 0x1FFu) < 0x80u)
+                s = 0.0;
+
+            // 5. Speaker-safe clamp: never past -3 dBFS, never NaN/DC.
+            data[i] = std::clamp(s, -0.7, 0.7);
+        }
+    }
+}
