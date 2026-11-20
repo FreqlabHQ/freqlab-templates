@@ -100,6 +100,7 @@
                 text-transform: uppercase;
                 letter-spacing: 1px;
             }
+            /* freqlab:licensing-begin */
 
             /* ===== Freqlab license UI =====
            Every element starts at `display: none`.  We only flip them
@@ -216,9 +217,11 @@
                 font-size: 11px;
                 min-height: 1em;
             }
+            /* freqlab:licensing-end */
         </style>
     </head>
     <body>
+        <!-- freqlab:licensing-begin -->
         <!-- Freqlab license UI (state-driven; hidden until C++ pushes
          a `licenseState` event with active: true). -->
         <div class="freqlab-pill" id="freqlabPill">
@@ -251,6 +254,7 @@
             </div>
         </div>
 
+        <!-- freqlab:licensing-end -->
         <h1>{{pascal_name}}</h1>
 
         <div class="control">
@@ -380,6 +384,7 @@
             window.addEventListener("load", () => {
                 callNative("requestInit");
             });
+            // freqlab:licensing-begin
 
             // ============================================================
             // Freqlab license UI
@@ -537,6 +542,7 @@
                 window.__JUCE__.backend.addEventListener("licenseState", FreqlabApplyState);
                 window.__JUCE__.backend.emitEvent("licenseQuery", {});
             }
+            // freqlab:licensing-end
         </script>
     </body>
 </html>

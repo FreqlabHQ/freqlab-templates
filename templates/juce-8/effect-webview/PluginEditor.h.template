@@ -3,8 +3,11 @@
 #include "PluginProcessor.h"
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "BinaryData.h"
+// freqlab:licensing-begin
 #include <mutex>
+// freqlab:licensing-end
 
+// freqlab:licensing-begin
 /// WebView-based plugin editor for {{pascal_name}}.
 ///
 /// All visible UI lives in ui.html (knob + license pill / banner /
@@ -20,6 +23,12 @@
 /// keeps the editor identical to a non-licensed plugin when the SDK
 /// reports `NoConfig` (local builds without the licensing config
 /// injected).
+// freqlab:licensing-else
+/// WebView-based plugin editor for {{pascal_name}}.
+///
+/// All visible UI lives in ui.html. The JUCE side hosts a WebBrowserComponent
+/// and passes parameters both ways.
+// freqlab:licensing-end
 class {{pascal_name}}Editor : public juce::AudioProcessorEditor,
                                private juce::Timer
 {
@@ -43,6 +52,7 @@ private:
     // Where WebView2 (Windows) keeps its data: a folder of this plugin's own
     static juce::File webViewDataFolder();
 
+    // freqlab:licensing-begin
     // License plumbing.  Each is invoked from a thin lambda registered
     // with the WebBrowserComponent::Options builder below; the bodies
     // live in the .cpp so the freqlab_licensing.h include stays out
@@ -51,14 +61,17 @@ private:
     void handleLicenseDeactivate();
     void pushLicenseState();
 
+    // freqlab:licensing-end
     {{pascal_name}}Processor& processorRef;
 
+    // freqlab:licensing-begin
     // Last activate / deactivate error, surfaced to the UI on the
     // next state push.  Mutex guards cross-thread writes from the
     // SDK's worker-thread callbacks.
     std::mutex mLicenseErrorMutex;
     juce::String mLicenseError;
 
+    // freqlab:licensing-end
     // The parameter a drag is changing, so closing the editor mid-drag can end its gesture
     juce::String openGesture;
 
@@ -103,6 +116,7 @@ private:
                 sendAllParameters();
                 completion(juce::var());
             })
+            // freqlab:licensing-begin
             // License commands.  JS uses `window.__JUCE__.backend.emitEvent(name, payload)`
             // and these listeners fire on the message thread.  The
             // pill / banner / modal are HTML overlays that hide
@@ -117,6 +131,7 @@ private:
             .withEventListener("licenseDeactivate", [this](juce::var) {
                 handleLicenseDeactivate();
             })
+            // freqlab:licensing-end
     };
 
     // Each parameter's normalized value as last sent to the UI (empty until the page asks)

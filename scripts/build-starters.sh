@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
-# build-starters.sh <framework> <work_dir>
+# build-starters.sh <framework> <work_dir> [both|on|off]
 #
 # Writes every Starter of one framework as a project (as the apps write a new one) and builds each in
 # turn. Each CMake dependency is downloaded once and reused by the later Starters
-# (FETCHCONTENT_SOURCE_DIR_<NAME>), and nih-plug Starters share one Cargo target folder.
+# (FETCHCONTENT_SOURCE_DIR_<NAME>), and nih-plug Starters share one Cargo target folder. The third
+# argument picks Freqlab licensing on, off, or both (the default: each Starter built twice).
 
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "Usage: $0 <framework> <work_dir>" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  echo "Usage: $0 <framework> <work_dir> [both|on|off]" >&2
   exit 2
 fi
 FRAMEWORK="$1"
 WORK="$2"
+case "${3:-both}" in
+  both) MODES="on off" ;;
+  on|off) MODES="$3" ;;
+  *) echo "Licensing must be both, on or off (got '$3')" >&2; exit 2 ;;
+esac
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$WORK"
 WORK="$(cd "$WORK" && pwd)"
@@ -30,11 +36,13 @@ fi
 
 shared_sources=()
 failed=()
+for mode in $MODES; do
 for starter in $STARTERS; do
-  dir="$WORK/$starter"
+  name="$starter (licensing $mode)"
+  dir="$WORK/$mode/$starter"
   rm -rf "$dir"
-  "$RENDER" "$FRAMEWORK" "$starter" "$dir"
-  echo "::group::$FRAMEWORK $starter"
+  if [[ "$mode" == "on" ]]; then "$RENDER" "$FRAMEWORK" "$starter" "$dir"; else "$RENDER" "$FRAMEWORK" "$starter" "$dir" --no-licensing; fi
+  echo "::group::$FRAMEWORK $name"
   if [[ -f "$dir/Cargo.toml" ]]; then
     if (cd "$dir" && CARGO_TARGET_DIR="$WORK/cargo-target" cargo build --release); then ok=1; else ok=0; fi
   else
@@ -44,18 +52,20 @@ for starter in $STARTERS; do
       for src in "$dir"/build/_deps/*-src; do
         [[ -d "$src" ]] || continue
         # (CMake's variable is the dependency's name upper-cased, hyphens kept)
-        name="$(basename "$src" -src | tr '[:lower:]' '[:upper:]')"
-        case " ${shared_sources[*]-} " in *" -DFETCHCONTENT_SOURCE_DIR_${name}="*) continue ;; esac
-        shared_sources+=("-DFETCHCONTENT_SOURCE_DIR_${name}=$src")
+        dep="$(basename "$src" -src | tr '[:lower:]' '[:upper:]')"
+        case " ${shared_sources[*]-} " in *" -DFETCHCONTENT_SOURCE_DIR_${dep}="*) continue ;; esac
+        shared_sources+=("-DFETCHCONTENT_SOURCE_DIR_${dep}=$src")
       done
     fi
   fi
   echo "::endgroup::"
-  if [[ $ok -eq 1 ]]; then echo "Built $FRAMEWORK $starter"; else echo "FAILED: $FRAMEWORK $starter"; failed+=("$starter"); fi
+  if [[ $ok -eq 1 ]]; then echo "Built $FRAMEWORK $name"; else echo "FAILED: $FRAMEWORK $name"; failed+=("$name"); fi
+done
 done
 
 if [[ ${#failed[@]} -gt 0 ]]; then
-  echo "Starters that didn't build ($FRAMEWORK): ${failed[*]}" >&2
+  printf "Starters that didn't build (%s):\n" "$FRAMEWORK" >&2
+  printf "  %s\n" "${failed[@]}" >&2
   exit 1
 fi
 echo "All $FRAMEWORK Starters built."

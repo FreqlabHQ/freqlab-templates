@@ -3,8 +3,12 @@
 #include "IPlug_include_in_plug_hdr.h"
 
 #include <atomic>
+// freqlab:licensing-begin
 #include <mutex>
+// freqlab:licensing-end
+// freqlab:licensing-begin
 #include <string>
+// freqlab:licensing-end
 
 // Parameter indices
 enum EParams {
@@ -21,6 +25,7 @@ public:
     void OnParamChange(int paramIdx) override;
     void ProcessBlock(iplug::sample** inputs, iplug::sample** outputs, int nFrames) override;
 
+    // freqlab:licensing-begin
     // Custom messages from the WebView UI (license activate /
     // deactivate / query).  See PluginProcessor.cpp for the
     // 4cc msgTag constants and dispatch logic.
@@ -34,6 +39,7 @@ public:
     // Main thread, called regularly: sends license state the SDK's callbacks left pending
     void OnIdle() override;
 
+    // freqlab:licensing-end
     // A drag in the UI is one host gesture; tracked so closing the editor mid-drag still ends it
     void BeginInformHostOfParamChangeFromUI(int paramIdx) override;
     void EndInformHostOfParamChangeFromUI(int paramIdx) override;
@@ -46,6 +52,7 @@ private:
     double mSmoothedGain = 1.0;
     double mSmoothCoeff = 0.001;
 
+    // freqlab:licensing-begin
     // Helper: read freqlab::licensing::current() and push a JSON
     // license_state message to the WebView so the UI can refresh.
     void PushLicenseStateToUI();
@@ -60,6 +67,7 @@ private:
     // to the web view from the main thread
     std::atomic<bool> mLicenseStatePending{false};
 
+    // freqlab:licensing-end
     // The parameter a UI drag is changing (-1: none)
     int mGestureParam = -1;
 

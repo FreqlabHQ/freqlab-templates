@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "28b149ec" }
+# freqlab:licensing-begin
 # freqlab licensing. Cloud build pipeline swaps this for the real
 # implementation when applyLicensing=true. Pick a dev-* feature to
 # preview each status state locally:
@@ -20,3 +21,4 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "28b149e
 #   features = ["dev-grace"]           # expiring soon (amber)
 #   features = ["dev-trial"]           # trial active (blue)
 freqlab-licensing = { git = "https://github.com/FreqlabHQ/freqlab-licensing", tag = "sdk-v0.1.2" }
+# freqlab:licensing-end

@@ -55,6 +55,7 @@ public:
     }
 };
 
+// freqlab:licensing-begin
 /// Clickable status pill in the editor's top-right corner. Shows a
 /// colored dot plus a short status label ("Licensed", "Expired", etc.).
 /// Click opens the license modal. On NoConfig (the stub's default) it
@@ -123,6 +124,7 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(LicenseModalComponent)
 };
 
+// freqlab:licensing-end
 /// Plugin editor for {{pascal_name}}
 class {{pascal_name}}Editor : public juce::AudioProcessorEditor
 {
@@ -148,12 +150,14 @@ private:
 
     // Helper to set up a knob
     void setupKnob(juce::Slider& slider, juce::Label& label, const juce::String& text);
+    // freqlab:licensing-begin
 
     // License UI: pill (top-right), banner (top, bad states only),
     // modal that opens on click of either.
     LicenseStatusPill licensePill;
     LicenseBanner licenseBanner;
     LicenseModalComponent licenseModal;
+    // freqlab:licensing-end
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR({{pascal_name}}Editor)
 };

@@ -1,15 +1,23 @@
 cmake_minimum_required(VERSION 3.22)
+# freqlab:licensing-begin
 # Toolchain settings go before project(). The cloud build
 # injects the licensing SDK via -DCMAKE_PROJECT_INCLUDE during
 # project(), and anything set after project() does not apply to
 # the SDK. See freqlab-licensing/README.md.
+# freqlab:licensing-else
+# Toolchain settings go before project(), so everything it sets up uses them.
+# freqlab:licensing-end
 
 if(WIN32)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE INTERNAL "")
 endif()
 
 if(APPLE)
+    # freqlab:licensing-begin
     # 10.15 (Catalina), for the licensing SDK's std::filesystem use.
+    # freqlab:licensing-else
+    # 10.15 (Catalina) or later
+    # freqlab:licensing-end
     # (macOS 10.15, not 15: Apple kept 10.x numbering through 2020.)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS version")
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Universal binary")
@@ -117,6 +125,7 @@ set(IPLUG_DEPLOY_PLUGINS OFF CACHE BOOL "" FORCE)
 
 find_package(iPlug2 REQUIRED)
 
+# freqlab:licensing-begin
 # freqlab licensing.
 #
 # Cloud licensed builds inject the real SDK via CMAKE_PROJECT_INCLUDE
@@ -136,12 +145,15 @@ if(NOT TARGET freqlab_licensing)
     FetchContent_MakeAvailable(freqlab_licensing)
 endif()
 
+# freqlab:licensing-end
 # Create plugin targets
 iplug_add_plugin(${PROJECT_NAME}
     SOURCES
         src/PluginProcessor.cpp
         src/PluginProcessor.h
+        # freqlab:licensing-begin
         src/freqlab_response.h
+        # freqlab:licensing-end
         config.h
         resource.h
     WEB_RESOURCES
@@ -192,6 +204,7 @@ if(WIN32)
     endforeach()
 endif()
 
+# freqlab:licensing-begin
 # Link freqlab licensing into every plugin-shaped target. iPlug2 creates
 # one target per format ({name}-vst3, -clap, -app, -au, -aax, and
 # {name}AU-framework for AUv3); link to whichever exist in this configuration.
@@ -201,6 +214,7 @@ foreach(_target ${PROJECT_NAME}-app ${PROJECT_NAME}-vst3 ${PROJECT_NAME}-clap ${
     endif()
 endforeach()
 
+# freqlab:licensing-end
 # Hot reload support: Override OBJC_PREFIX with unique per-build suffix
 # so Objective-C class names differ between builds and a reload doesn't clash
 # (Obj-C classes stay registered after dlclose)

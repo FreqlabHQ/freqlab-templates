@@ -1,8 +1,13 @@
 use nih_plug::prelude::*;
 use nih_plug_egui::{create_egui_editor, egui, widgets, EguiState};
+// freqlab:licensing-begin
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+// freqlab:licensing-else
+use std::sync::Arc;
+// freqlab:licensing-end
 
+// freqlab:licensing-begin
 // Freqlab licensing: does nothing in stub builds (Status::NoConfig),
 // so a plugin without licensing behaves as if it weren't there.
 use freqlab_licensing as licensing;
@@ -10,6 +15,8 @@ mod freqlab_response;
 mod freqlab_dsp;
 use freqlab_response::freqlab_should_run_dsp;
 
+// freqlab:licensing-end
+// freqlab:licensing-begin
 /// Persistent state for the license UI, threaded through
 /// `create_egui_editor`'s user_state. `last_error` is Arc<Mutex>
 /// because worker threads write to it; everything else is only
@@ -22,6 +29,7 @@ struct LicenseUiState {
     last_error: Arc<Mutex<Option<String>>>,
 }
 
+// freqlab:licensing-end
 /// How long a note takes to fade in, and to fade out once its key is up
 const ATTACK_SECONDS: f32 = 0.005;
 const RELEASE_SECONDS: f32 = 0.05;
@@ -136,28 +144,41 @@ impl Plugin for {{struct_name}} {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
+        // freqlab:licensing-begin
         // Sync the SDK cache against the server on plugin load.
         // refresh() blocks (disk + HTTP) so it runs on a worker
         // thread. No-op in stub builds (returns NoConfig).
         std::thread::spawn(|| { let _ = licensing::refresh(); });
 
+        // freqlab:licensing-end
         self.sample_rate = buffer_config.sample_rate;
         true
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        // freqlab:licensing-begin
         // Refresh when the editor opens so the UI shows the latest
         // state from the server, not an older one. The blocking disk and
         // HTTPS call runs on a worker; it does nothing in stub builds.
         std::thread::spawn(|| { let _ = licensing::refresh(); });
 
+        // freqlab:licensing-end
         let params = self.params.clone();
 
         create_egui_editor(
             self.params.editor_state.clone(),
+            // freqlab:licensing-begin
             LicenseUiState::default(),
+            // freqlab:licensing-else
+            (),
+            // freqlab:licensing-end
             |_, _| {},
+            // freqlab:licensing-begin
             move |egui_ctx, setter, state| {
+            // freqlab:licensing-else
+            move |egui_ctx, setter, _state| {
+            // freqlab:licensing-end
+                // freqlab:licensing-begin
                 // SDK status is a lock-free atomic read; safe to call
                 // every frame.  NoConfig means the stub is wired up
                 // but no licensing config has been injected, so we
@@ -252,6 +273,7 @@ impl Plugin for {{struct_name}} {
                     });
                 }
 
+                // freqlab:licensing-end
                 // Main UI.
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(egui::Color32::from_rgb(26, 26, 46)))
@@ -267,6 +289,7 @@ impl Plugin for {{struct_name}} {
                             });
                         });
                     });
+                // freqlab:licensing-begin
 
                 // The license panel: only after a click on the pill
                 // or banner, and only when licensing is configured.
@@ -359,10 +382,12 @@ impl Plugin for {{struct_name}} {
                         }
                     });
                 }
+                // freqlab:licensing-end
             },
         )
     }
 
+    // freqlab:licensing-begin
     // The `@freqlab:require-license` marker tells our cloud
     // transformer to wrap this function with a license gate at
     // build time. The inline `freqlab_should_run_dsp(buffer)`
@@ -370,12 +395,14 @@ impl Plugin for {{struct_name}} {
     // too, so the plugin silences correctly without a cloud build.
     //
     // @freqlab:require-license
+    // freqlab:licensing-end
     fn process(
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        // freqlab:licensing-begin
         if !freqlab_should_run_dsp(buffer) {
             // (this block's MIDI is skipped, maybe a note's release: no note left hanging)
             self.gate = false;
@@ -383,6 +410,7 @@ impl Plugin for {{struct_name}} {
             return ProcessStatus::Normal;
         }
 
+        // freqlab:licensing-end
         // MIDI events land on the sample they're timed for, not the start of the block
         let mut next_event = context.next_event();
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
@@ -442,15 +470,18 @@ impl Plugin for {{struct_name}} {
             }
         }
 
+        // freqlab:licensing-begin
         // The cloud transformer injects freqlab_dsp_fold(buffer) here; it is the
         // identity in all licensed builds and only mangles audio in an enforced
         // cloud build when the license is bypassed.
         // @freqlab:dsp-fold
 
+        // freqlab:licensing-end
         ProcessStatus::Normal
     }
 }
 
+// freqlab:licensing-begin
 impl Drop for {{struct_name}} {
     fn drop(&mut self) {
         // Flip the SDK's cancellation flag so any in-flight refresh /
@@ -462,6 +493,7 @@ impl Drop for {{struct_name}} {
     }
 }
 
+// freqlab:licensing-end
 impl ClapPlugin for {{struct_name}} {
     const CLAP_ID: &'static str = "{{clap_id}}";
     const CLAP_DESCRIPTION: Option<&'static str> = Some("{{description}}");

@@ -27,6 +27,7 @@
                 flex-direction: column;
                 height: 100vh;
             }
+            /* freqlab:licensing-begin */
             /* Status banner: sticky, solid background */
             .lic-banner {
                 display: none;
@@ -56,6 +57,7 @@
                 border-bottom-color: rgba(187, 85, 255, 0.55);
             }
 
+            /* freqlab:licensing-end */
             .main {
                 flex: 1;
                 display: flex;
@@ -66,6 +68,7 @@
                 position: relative;
             }
 
+            /* freqlab:licensing-begin */
             /* Status pill: top-right corner */
             .lic-pill {
                 position: absolute;
@@ -118,6 +121,7 @@
                 color: #bb55ff;
             }
 
+            /* freqlab:licensing-end */
             h1 {
                 font-size: 24px;
                 font-weight: 600;
@@ -160,6 +164,7 @@
                 font-weight: 500;
                 color: #4ecdc4;
             }
+            /* freqlab:licensing-begin */
 
             /* License modal */
             .lic-modal {
@@ -296,15 +301,20 @@
                 min-height: 14px;
                 text-align: center;
             }
+            /* freqlab:licensing-end */
         </style>
     </head>
     <body>
         <div class="app">
+            <!-- freqlab:licensing-begin -->
             <div class="lic-banner" id="lic-banner"></div>
 
+            <!-- freqlab:licensing-end -->
             <div class="main">
+                <!-- freqlab:licensing-begin -->
                 <div class="lic-pill" id="lic-pill"><span id="lic-pill-text">Unknown</span></div>
 
+                <!-- freqlab:licensing-end -->
                 <h1>{{pascal_name}}</h1>
                 <div class="control">
                     <label>Gain</label>
@@ -313,6 +323,7 @@
                 </div>
             </div>
         </div>
+        <!-- freqlab:licensing-begin -->
 
         <div class="lic-modal" id="lic-modal">
             <div class="lic-modal-panel">
@@ -334,11 +345,13 @@
                 <div class="lic-error" id="lic-error"></div>
             </div>
         </div>
+        <!-- freqlab:licensing-end -->
 
         <script>
             const gainSlider = document.getElementById("gain");
             const gainValue = document.getElementById("gain-value");
 
+            // freqlab:licensing-begin
             const licPill = document.getElementById("lic-pill");
             const licPillText = document.getElementById("lic-pill-text");
             const licBanner = document.getElementById("lic-banner");
@@ -351,10 +364,12 @@
             const licDeactivate = document.getElementById("lic-deactivate");
             const licError = document.getElementById("lic-error");
 
+            // freqlab:licensing-end
             function sendToPlugin(msg) {
                 window.ipc.postMessage(JSON.stringify(msg));
             }
 
+            // freqlab:licensing-begin
             // Status to (pill class, pill label, modal class, modal label, banner class, banner copy)
             const STATUS_CONFIG = {
                 Licensed: {
@@ -475,13 +490,16 @@
                 sendToPlugin({ type: "DeactivateLicense" });
             });
 
+            // freqlab:licensing-end
             window.onPluginMessage = function (msg) {
                 if (msg.type === "param_change" && msg.param === "gain") {
                     // (mid-drag the slider is the user's: only the readout follows)
                     if (!gainDragging) gainSlider.value = msg.value;
                     gainValue.textContent = msg.text;
+                // freqlab:licensing-begin
                 } else if (msg.type === "license_state") {
                     applyLicenseState(msg);
+                // freqlab:licensing-end
                 }
             };
 

@@ -1,6 +1,7 @@
 use nih_plug::prelude::*;
 use std::sync::Arc;
 
+// freqlab:licensing-begin
 // Freqlab licensing: does nothing in stub builds (Status::NoConfig),
 // so a plugin without licensing behaves as if it weren't there.
 use freqlab_licensing as licensing;
@@ -8,6 +9,7 @@ mod freqlab_response;
 mod freqlab_dsp;
 use freqlab_response::freqlab_should_run_dsp;
 
+// freqlab:licensing-end
 /// How long a note takes to fade in, and to fade out once its key is up
 const ATTACK_SECONDS: f32 = 0.005;
 const RELEASE_SECONDS: f32 = 0.05;
@@ -123,15 +125,18 @@ impl Plugin for {{struct_name}} {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
+        // freqlab:licensing-begin
         // Sync the SDK cache against the server on plugin load.
         // refresh() blocks (disk + HTTP) so it runs on a worker
         // thread. No-op in stub builds (returns NoConfig).
         std::thread::spawn(|| { let _ = licensing::refresh(); });
 
+        // freqlab:licensing-end
         self.sample_rate = buffer_config.sample_rate;
         true
     }
 
+    // freqlab:licensing-begin
     // The `@freqlab:require-license` marker tells our cloud
     // transformer to wrap this function with a license gate at
     // build time. The inline `freqlab_should_run_dsp(buffer)`
@@ -139,12 +144,14 @@ impl Plugin for {{struct_name}} {
     // too, so the plugin silences correctly without a cloud build.
     //
     // @freqlab:require-license
+    // freqlab:licensing-end
     fn process(
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        // freqlab:licensing-begin
         if !freqlab_should_run_dsp(buffer) {
             // (this block's MIDI is skipped, maybe a note's release: no note left hanging)
             self.gate = false;
@@ -152,6 +159,7 @@ impl Plugin for {{struct_name}} {
             return ProcessStatus::Normal;
         }
 
+        // freqlab:licensing-end
         // MIDI events land on the sample they're timed for, not the start of the block
         let mut next_event = context.next_event();
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
@@ -211,15 +219,18 @@ impl Plugin for {{struct_name}} {
             }
         }
 
+        // freqlab:licensing-begin
         // The cloud transformer injects freqlab_dsp_fold(buffer) here; it is the
         // identity in all licensed builds and only mangles audio in an enforced
         // cloud build when the license is bypassed.
         // @freqlab:dsp-fold
 
+        // freqlab:licensing-end
         ProcessStatus::Normal
     }
 }
 
+// freqlab:licensing-begin
 impl Drop for {{struct_name}} {
     fn drop(&mut self) {
         // Flip the SDK's cancellation flag so any in-flight refresh /
@@ -231,6 +242,7 @@ impl Drop for {{struct_name}} {
     }
 }
 
+// freqlab:licensing-end
 impl ClapPlugin for {{struct_name}} {
     const CLAP_ID: &'static str = "{{clap_id}}";
     const CLAP_DESCRIPTION: Option<&'static str> = Some("{{description}}");

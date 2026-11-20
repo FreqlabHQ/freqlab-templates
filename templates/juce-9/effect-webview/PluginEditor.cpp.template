@@ -1,5 +1,7 @@
 #include "PluginEditor.h"
+// freqlab:licensing-begin
 #include "freqlab_licensing.h"
+// freqlab:licensing-end
 
 {{pascal_name}}Editor::{{pascal_name}}Editor({{pascal_name}}Processor& p)
     : juce::AudioProcessorEditor(p), processorRef(p)
@@ -113,6 +115,7 @@ void {{pascal_name}}Editor::sendAllParameters()
     lastSent.assign((size_t) processorRef.getParameters().size(), -1.0f);
     timerCallback();
 }
+// freqlab:licensing-begin
 
 void {{pascal_name}}Editor::handleLicenseActivate(const juce::var& data)
 {
@@ -228,3 +231,4 @@ void {{pascal_name}}Editor::pushLicenseState()
 
     webView.emitEventIfBrowserIsVisible("licenseState", juce::var(obj.get()));
 }
+// freqlab:licensing-end

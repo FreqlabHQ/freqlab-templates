@@ -1,5 +1,5 @@
 //! Writes one Starter as a project with fixed example values, the way the apps write a new one, so
-//! it can be built: `cargo run --example render -- <framework> <kind>-<ui> <out_dir>`.
+//! it can be built: `cargo run --example render -- <framework> <kind>-<ui> <out_dir> [--no-licensing]`.
 //! The apps fill the same keys from the new project's name, vendor and fresh random ids.
 //! `render --frameworks` prints the frameworks as a JSON array (CI's build matrix), and
 //! `render --starters <framework>` prints that framework's Starters, one a line.
@@ -23,12 +23,14 @@ fn main() {
         }
         _ => {}
     }
-    let [framework, variant, out] = args.as_slice() else {
-        eprintln!("Usage: render <framework> <kind>-<ui> <out_dir>");
+    let licensing = !args.iter().any(|a| a == "--no-licensing");
+    let positional: Vec<&String> = args.iter().filter(|a| *a != "--no-licensing").collect();
+    let [framework, variant, out] = positional.as_slice() else {
+        eprintln!("Usage: render <framework> <kind>-<ui> <out_dir> [--no-licensing]");
         std::process::exit(2);
     };
     let (kind, ui) = variant.split_once('-').unwrap_or_else(|| panic!("'{variant}' isn't <kind>-<ui>"));
-    let files = freqlab_templates::starter(framework, kind, ui).unwrap_or_else(|| panic!("no {framework} Starter '{variant}'"));
+    let files = freqlab_templates::starter(framework, kind, ui, licensing).unwrap_or_else(|| panic!("no {framework} Starter '{variant}'"));
 
     let values: HashMap<String, String> = [
         ("snake_name", "ci_plug"),
@@ -58,7 +60,7 @@ fn main() {
     for file in files {
         let path = out.join(freqlab_templates::output_path(&file.filename, &values["pascal_name"]));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, freqlab_templates::apply_placeholders(file.content, &values)).unwrap();
+        std::fs::write(&path, freqlab_templates::apply_placeholders(&file.content, &values)).unwrap();
     }
     // The formats a new project gets by default in the apps (VST3 and CLAP; JUCE's CLAP comes from
     // clap-juce-extensions, not its FORMATS list), written into FORMATS as the apps do

@@ -87,6 +87,7 @@
                 font-weight: 500;
                 color: #6c63ff;
             }
+            /* freqlab:licensing-begin */
             /* ===== Freqlab license UI ===== */
             .freqlab-pill {
                 position: fixed;
@@ -194,9 +195,11 @@
                 font-size: 11px;
                 min-height: 1em;
             }
+            /* freqlab:licensing-end */
         </style>
     </head>
     <body>
+        <!-- freqlab:licensing-begin -->
         <!-- Freqlab license UI (state-driven; hidden until C++ pushes data) -->
         <div class="freqlab-pill" id="freqlabPill">
             <span class="freqlab-pill__dot" id="freqlabPillDot"></span>
@@ -227,6 +230,7 @@
                 <div class="freqlab-modal__error" id="freqlabModalError"></div>
             </div>
         </div>
+        <!-- freqlab:licensing-end -->
         <div class="plugin-title">{{pascal_name}}</div>
 
         <div class="controls">
@@ -316,15 +320,17 @@
 
             // Send Arbitrary Message From Delegate
             function SAMFD(msgTag, dataSize, msg) {
+                // freqlab:licensing-begin
                 // Custom-tagged license_state message from C++.  See
                 // PluginProcessor.cpp for kMsgLicenseState (0x6C737474).
                 if (msgTag === 0x6c737474) {
                     FreqlabHandleStateMessage(msg);
                     return;
                 }
+                // freqlab:licensing-end
                 // iPlug2's own messages: the parameter list, sent when the page loads
                 if (msgTag === -1) {
-                    const json = FreqlabDecodeJson(msg);
+                    const json = DecodeJsonMessage(msg);
                     if (json && json.id === "params") {
                         json.params.forEach((p) => {
                             paramInfo[p.id] = p;
@@ -347,7 +353,7 @@
             function OnMessage(msgTag, dataSize, msg) {}
 
             // Base64 JSON from C++ (iPlug2 base64-encodes these messages), decoded as UTF-8
-            function FreqlabDecodeJson(raw) {
+            function DecodeJsonMessage(raw) {
                 try {
                     const bytes = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
                     return JSON.parse(new TextDecoder().decode(bytes));
@@ -443,6 +449,7 @@
             document.querySelectorAll(".knob").forEach((el) => {
                 knobs[parseInt(el.dataset.param)] = new KnobController(el);
             });
+            // freqlab:licensing-begin
             // ============================================================
             // Freqlab license UI
             // ============================================================
@@ -457,7 +464,7 @@
             };
 
             function FreqlabHandleStateMessage(raw) {
-                const state = FreqlabDecodeJson(raw);
+                const state = DecodeJsonMessage(raw);
                 if (!state) {
                     console.warn("Freqlab: unparseable license_state payload", raw);
                     return;
@@ -631,6 +638,7 @@
             window.addEventListener("DOMContentLoaded", () => {
                 SAMFUI(FREQLAB_MSG.QUERY, -1, "");
             });
+            // freqlab:licensing-end
         </script>
     </body>
 </html>

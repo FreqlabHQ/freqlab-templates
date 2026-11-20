@@ -1,15 +1,23 @@
 cmake_minimum_required(VERSION 3.22)
+# freqlab:licensing-begin
 # Toolchain settings go before project(). The cloud build
 # injects the licensing SDK via -DCMAKE_PROJECT_INCLUDE during
 # project(), and anything set after project() does not apply to
 # the SDK. See freqlab-licensing/README.md.
+# freqlab:licensing-else
+# Toolchain settings go before project(), so everything it sets up uses them.
+# freqlab:licensing-end
 
 if(WIN32)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE INTERNAL "")
 endif()
 
 if(APPLE)
+    # freqlab:licensing-begin
     # 10.15 (Catalina), for the licensing SDK's std::filesystem use.
+    # freqlab:licensing-else
+    # 10.15 (Catalina) or later
+    # freqlab:licensing-end
     # (macOS 10.15, not 15: Apple kept 10.x numbering through 2020.)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS version")
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Universal binary")
@@ -139,6 +147,7 @@ target_sources({{pascal_name}}
 # Include directories
 target_include_directories({{pascal_name}} PRIVATE src)
 
+# freqlab:licensing-begin
 # freqlab licensing.
 #
 # Local + cloud-unlicensed builds: FetchContent the public stub. It
@@ -167,13 +176,16 @@ if(NOT TARGET freqlab_licensing)
     FetchContent_MakeAvailable(freqlab_licensing)
 endif()
 
+# freqlab:licensing-end
 # Required JUCE modules (including juce_gui_extra for WebBrowserComponent)
 target_link_libraries({{pascal_name}}
     PRIVATE
         {{pascal_name}}WebResources
         juce::juce_audio_utils
         juce::juce_dsp
+        # freqlab:licensing-begin
         freqlab_licensing
+        # freqlab:licensing-end
         juce::juce_gui_extra
     PUBLIC
         juce::juce_recommended_config_flags

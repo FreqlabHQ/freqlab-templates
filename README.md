@@ -7,13 +7,14 @@ The Starter plugin templates that [Freqlab Studio](https://creator.freqlab.co/st
 - `templates/<framework>/<kind>-<ui>/`: one folder per Starter (JUCE 8, JUCE 9, iPlug2 and NIH-plug; effect or instrument; each UI). A file's trailing `.template` is dropped when it's written, and `{{placeholders}}` are filled with the new project's name, vendor and ids.
 - `src/lib.rs`: the crate. It compiles every template in, and gives the apps the Starter list, a Starter's files, placeholder filling and where each file goes in the new project.
 - `examples/render.rs`: writes one Starter as a project with example values, for building it by hand or in CI.
-- `scripts/build-starters.sh <framework> <dir>`: writes and builds every Starter of a framework, reusing the framework's download between them. CI runs it only when started by hand (Actions, CI, Run workflow); pushes run just the crate's tests.
+- `scripts/build-starters.sh <framework> <dir> [both|on|off]`: writes and builds every Starter of a framework with Freqlab licensing on, off or both (the default), reusing the framework's download between them. CI runs it only when started by hand (Actions, CI, Run workflow); pushes run just the crate's tests.
 - `scripts/bump-licensing-sdk.sh`: bumps the freqlab-licensing SDK tag pinned in every Starter.
 
 ## Try a Starter
 
 ```bash
 cargo run --example render -- juce-9 effect-webview /tmp/my-plug
+cargo run --example render -- juce-9 effect-webview /tmp/my-plug --no-licensing
 cd /tmp/my-plug && cmake -B build -S . -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release
 ```
 
@@ -24,7 +25,7 @@ NIH-plug Starters build with `cargo build --release`.
 Each app depends on a tagged release in `src-tauri/Cargo.toml`:
 
 ```toml
-freqlab-templates = { git = "https://github.com/FreqlabHQ/freqlab-templates", tag = "v0.1.0" }
+freqlab-templates = { git = "https://github.com/FreqlabHQ/freqlab-templates", tag = "v0.1.2" }
 ```
 
 The templates are compiled into the app: users never download anything, and the app works offline. To change a template, change it here, run the Starter builds for bigger changes (Actions, CI, Run workflow: macOS and Windows), tag a release, then bump the tag in both apps.
@@ -35,6 +36,20 @@ To work on templates and an app together, point the app at your checkout without
 [patch."https://github.com/FreqlabHQ/freqlab-templates"]
 freqlab-templates = { path = "../../freqlab-templates" }
 ```
+
+## Freqlab licensing in a template
+
+Code that only belongs in a Starter made with Freqlab licensing sits between two marker comments, in the file's own comment style:
+
+```cpp
+// freqlab:licensing-begin
+#include "freqlab_licensing.h"
+// freqlab:licensing-else
+// (what goes here instead without licensing, if anything)
+// freqlab:licensing-end
+```
+
+The `else` part is optional. Marker lines never reach a project. Blocks don't nest. `cargo test` checks every Starter both ways.
 
 ## License
 

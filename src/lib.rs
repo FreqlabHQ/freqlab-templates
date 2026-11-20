@@ -3,6 +3,12 @@
 //!
 //! Templates live in `templates/<framework>/<kind>-<ui>/`, compiled into the crate. A file's
 //! trailing `.template` is dropped when it's written.
+//!
+//! Freqlab licensing is optional in a new project. In a template, a line holding
+//! `freqlab:licensing-begin` starts licensing code and `freqlab:licensing-end` ends it, in whatever
+//! comment the file uses; `freqlab:licensing-else` between them starts what's written instead when
+//! licensing is off. The marker lines never reach a project. Files that exist only for licensing
+//! (`freqlab_response`, `freqlab_dsp`, `LicenseUI.h`) are left out without it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,7 +22,55 @@ include!(concat!(env!("OUT_DIR"), "/files.rs"));
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateFile {
     pub filename: String,
-    pub content: &'static str,
+    pub content: String,
+}
+
+const BEGIN: &str = "freqlab:licensing-begin";
+const ELSE: &str = "freqlab:licensing-else";
+const END: &str = "freqlab:licensing-end";
+
+/// A file that's there only for Freqlab licensing
+fn licensing_only(filename: &str) -> bool {
+    let name = filename.rsplit('/').next().unwrap_or(filename);
+    name.starts_with("freqlab_response.") || name.starts_with("freqlab_dsp.") || name == "LicenseUI.h"
+}
+
+/// `text` with its licensing blocks kept or dropped (see the crate docs), or why its markers
+/// don't pair up
+pub fn with_licensing(text: &str, licensing: bool) -> Result<String, String> {
+    #[derive(PartialEq)]
+    enum In {
+        Outside,
+        Licensing,
+        Instead,
+    }
+    let mut at = In::Outside;
+    let mut out = String::with_capacity(text.len());
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        let line_no = index + 1;
+        if line.contains(BEGIN) {
+            if at != In::Outside {
+                return Err(format!("line {line_no}: licensing-begin inside another block"));
+            }
+            at = In::Licensing;
+        } else if line.contains(ELSE) {
+            if at != In::Licensing {
+                return Err(format!("line {line_no}: licensing-else outside a block"));
+            }
+            at = In::Instead;
+        } else if line.contains(END) {
+            if at == In::Outside {
+                return Err(format!("line {line_no}: licensing-end with no block open"));
+            }
+            at = In::Outside;
+        } else if at == In::Outside || (at == In::Licensing) == licensing {
+            out.push_str(line);
+        }
+    }
+    if at != In::Outside {
+        return Err("a licensing block is never closed".to_string());
+    }
+    Ok(out)
 }
 
 /// The frameworks that have Starters, sorted
@@ -39,27 +93,30 @@ pub fn starters(framework: &str) -> Vec<&'static str> {
     names
 }
 
-/// Every file of the `<kind>-<ui>` Starter for `framework`, or `None` if there isn't one
-pub fn starter(framework: &str, kind: &str, ui: &str) -> Option<Vec<TemplateFile>> {
+/// Every file of the `<kind>-<ui>` Starter for `framework`, with or without Freqlab licensing, or
+/// `None` if there isn't one
+pub fn starter(framework: &str, kind: &str, ui: &str, licensing: bool) -> Option<Vec<TemplateFile>> {
     let prefix = format!("{framework}/{kind}-{ui}/");
     let files: Vec<_> = FILES
         .iter()
         .filter_map(|(key, content)| {
             let rel = key.strip_prefix(&prefix)?;
-            Some(TemplateFile { filename: rel.strip_suffix(".template").unwrap_or(rel).to_string(), content })
+            let filename = rel.strip_suffix(".template").unwrap_or(rel).to_string();
+            (licensing || !licensing_only(&filename)).then(|| TemplateFile {
+                content: with_licensing(content, licensing).unwrap_or_else(|why| panic!("{key}: {why}")),
+                filename,
+            })
         })
         .collect();
     (!files.is_empty()).then_some(files)
 }
 
-/// One Starter file's text as written in the template (placeholders and all): `name` is its
-/// path inside the Starter, with or without `.template`
-pub fn starter_file(framework: &str, variant: &str, name: &str) -> Option<&'static str> {
+/// One Starter file's text with licensing (placeholders still in): `name` is its path inside the
+/// Starter, with or without `.template`
+pub fn starter_file(framework: &str, variant: &str, name: &str) -> Option<String> {
     let key = format!("{framework}/{variant}/{}", name.strip_suffix(".template").unwrap_or(name));
-    FILES
-        .iter()
-        .find(|(k, _)| k.strip_suffix(".template").unwrap_or(k) == key)
-        .map(|(_, content)| *content)
+    let (_, content) = FILES.iter().find(|(k, _)| k.strip_suffix(".template").unwrap_or(k) == key)?;
+    Some(with_licensing(content, true).unwrap_or_else(|why| panic!("{key}: {why}")))
 }
 
 /// Fills placeholders (`{{key}}` or `{key}`) in one pass: a value is never expanded again, and
@@ -107,13 +164,58 @@ mod tests {
             assert_eq!(names.len(), 6, "{framework}: {names:?}");
             for name in names {
                 let (kind, ui) = name.split_once('-').unwrap();
-                let files = starter(framework, kind, ui).unwrap();
-                assert!(files.iter().all(|f| !f.filename.ends_with(".template") && !f.content.is_empty()), "{framework}/{name}");
-                assert!(files.iter().any(|f| f.filename == "Cargo.toml" || f.filename == "CMakeLists.txt"), "{framework}/{name}");
+                for licensing in [true, false] {
+                    let files = starter(framework, kind, ui, licensing).unwrap();
+                    assert!(files.iter().all(|f| !f.filename.ends_with(".template") && !f.content.is_empty()), "{framework}/{name}");
+                    assert!(files.iter().any(|f| f.filename == "Cargo.toml" || f.filename == "CMakeLists.txt"), "{framework}/{name}");
+                    assert!(files.iter().all(|f| ![BEGIN, ELSE, END].iter().any(|m| f.content.contains(m))), "{framework}/{name}: a marker left");
+                }
             }
         }
-        assert!(starter("juce-9", "effect", "nope").is_none());
+        assert!(starter("juce-9", "effect", "nope", true).is_none());
         assert!(starters("nope").is_empty());
+    }
+
+    /// Every word that only licensing code uses: none may be left in a project made without it
+    const LICENSING_WORDS: &[&str] = &[
+        "freqlab_licensing", "freqlab-licensing", "licensing::", "freqlab_should_run_dsp", "freqlab_dsp",
+        "freqlab_response", "@freqlab:", "LicenseUI", "licenseState", "license_state", "LicenseStatus",
+        "LicenseBanner", "LicenseModal", "refreshAsync", "FREQLAB_LICENSING",
+    ];
+
+    #[test]
+    fn a_starter_made_without_licensing_has_none_of_it() {
+        for framework in frameworks() {
+            for name in starters(framework) {
+                let (kind, ui) = name.split_once('-').unwrap();
+                let off = starter(framework, kind, ui, false).unwrap();
+                let on = starter(framework, kind, ui, true).unwrap();
+                assert!(off.iter().all(|f| !licensing_only(&f.filename)), "{framework}/{name}");
+                assert!(on.iter().any(|f| licensing_only(&f.filename)), "{framework}/{name} has its licensing files");
+                for file in &off {
+                    for (n, line) in file.content.lines().enumerate() {
+                        let left: Vec<&&str> = LICENSING_WORDS.iter().filter(|w| line.contains(**w)).collect();
+                        assert!(left.is_empty(), "{framework}/{name}/{}:{}: {left:?} in `{}`", file.filename, n + 1, line.trim());
+                        // (a Cargo package's `license = ` is its own licence, not Freqlab's)
+                        let lower = line.to_lowercase();
+                        assert!(!lower.contains("licens") || lower.trim_start().starts_with("license ="),
+                            "{framework}/{name}/{}:{}: `{}`", file.filename, n + 1, line.trim());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn licensing_blocks_are_kept_dropped_or_swapped() {
+        let text = "a\n// freqlab:licensing-begin\nlicensed\n// freqlab:licensing-else\nplain\n// freqlab:licensing-end\nb\n# freqlab:licensing-begin\nonly\n# freqlab:licensing-end\nc";
+        assert_eq!(with_licensing(text, true).unwrap(), "a\nlicensed\nb\nonly\nc");
+        assert_eq!(with_licensing(text, false).unwrap(), "a\nplain\nb\nc");
+        assert!(with_licensing("// freqlab:licensing-begin\nx\n", true).is_err());
+        assert!(with_licensing("x\n// freqlab:licensing-end\n", true).is_err());
+        assert!(with_licensing("// freqlab:licensing-else\n", true).is_err());
+        assert!(with_licensing("// freqlab:licensing-begin\n// freqlab:licensing-begin\n", true).is_err());
+        assert_eq!(with_licensing("no markers\r\nat all", false).unwrap(), "no markers\r\nat all");
     }
 
     #[test]

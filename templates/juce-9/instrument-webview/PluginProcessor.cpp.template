@@ -1,20 +1,24 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+// freqlab:licensing-begin
 #include "freqlab_licensing.h"
 #include "freqlab_response.h"
 #include "freqlab_dsp.h"
 
+// freqlab:licensing-end
 {{pascal_name}}Processor::{{pascal_name}}Processor()
     : juce::AudioProcessor(BusesProperties()
                      .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       apvts(*this, nullptr, "Parameters", createParameterLayout())
 {
+    // freqlab:licensing-begin
     // Sync the SDK cache against the server when the plugin loads.
     // refreshAsync() returns immediately and does the blocking HTTPS
     // call on the SDK's worker thread. No-op in stub builds.
     freqlab::licensing::refreshAsync();
 
+    // freqlab:licensing-end
     // Add voices to synthesizer
     for (int i = 0; i < numVoices; ++i)
         synth.addVoice(new {{pascal_name}}Voice());
@@ -25,9 +29,11 @@
 
 {{pascal_name}}Processor::~{{pascal_name}}Processor()
 {
+    // freqlab:licensing-begin
     // Block until any in-flight SDK worker has exited so the host can
     // safely unload the plugin dylib.  Stub builds make this a no-op.
     freqlab::licensing::shutdown();
+    // freqlab:licensing-end
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout {{pascal_name}}Processor::createParameterLayout()
@@ -74,6 +80,7 @@ void {{pascal_name}}Processor::releaseResources()
 {
 }
 
+// freqlab:licensing-begin
 // The `@freqlab:require-license` marker tells our cloud transformer
 // to wrap this function with a license gate at build time. The inline
 // `freqlab_should_run_dsp(buffer)` call below makes the same gate run
@@ -81,11 +88,14 @@ void {{pascal_name}}Processor::releaseResources()
 // without a cloud build.
 //
 // @freqlab:require-license
+// freqlab:licensing-end
 void {{pascal_name}}Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
+    // freqlab:licensing-begin
     if (!freqlab_should_run_dsp(buffer))
         return;
 
+    // freqlab:licensing-end
     juce::ScopedNoDenormals noDenormals;
 
     // Clear buffer (synth.renderNextBlock adds to buffer)
@@ -98,11 +108,13 @@ void {{pascal_name}}Processor::processBlock(juce::AudioBuffer<float>& buffer, ju
 
     smoothedGain.setTargetValue(gain);
     smoothedGain.applyGain(buffer, buffer.getNumSamples());
+    // freqlab:licensing-begin
 
     // The cloud transformer injects freqlab_dsp_fold(buffer) here; it is the
     // identity in all licensed builds and only mangles audio in an enforced
     // cloud build when the license is bypassed.
     // @freqlab:dsp-fold
+    // freqlab:licensing-end
 }
 
 void {{pascal_name}}Processor::getStateInformation(juce::MemoryBlock& destData)

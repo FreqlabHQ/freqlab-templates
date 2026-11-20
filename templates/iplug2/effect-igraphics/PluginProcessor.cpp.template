@@ -3,11 +3,13 @@
 
 #include <cmath>
 
+// freqlab:licensing-begin
 #include "freqlab_licensing.h"
 #include "freqlab_response.h"
 #include "freqlab_dsp.h"
 #include "LicenseUI.h"
 
+// freqlab:licensing-end
 using namespace iplug;
 using namespace igraphics;
 
@@ -20,11 +22,13 @@ using namespace igraphics;
     // Initialize cached values
     mGain = DBToAmp(GetParam(kGain)->Value());
 
+    // freqlab:licensing-begin
     // Sync the SDK cache against the server when the plugin loads.
     // refreshAsync() returns immediately and does the blocking HTTPS
     // call on the SDK's worker thread. No-op in stub builds.
     freqlab::licensing::refreshAsync();
 
+    // freqlab:licensing-end
 #if IPLUG_EDITOR
     mMakeGraphicsFunc = [&]() { return CreateGraphics(); };
     mLayoutFunc = [&](IGraphics* pGraphics) { LayoutUI(pGraphics); };
@@ -32,9 +36,11 @@ using namespace igraphics;
 }
 
 {{class_name}}::~{{class_name}}() {
+    // freqlab:licensing-begin
     // Block until any in-flight SDK worker has exited so the host can
     // safely unload the plugin dylib.  Stub builds make this a no-op.
     freqlab::licensing::shutdown();
+    // freqlab:licensing-end
 }
 
 #if IPLUG_EDITOR
@@ -68,6 +74,7 @@ void {{class_name}}::LayoutUI(IGraphics* pGraphics) {
         "Gain",
         labelText
     ));
+    // freqlab:licensing-begin
 
     // Freqlab licensing UI. The banner is added after the pill so it
     // paints on top of the pill row when a bad-status banner shows.
@@ -82,6 +89,7 @@ void {{class_name}}::LayoutUI(IGraphics* pGraphics) {
     pGraphics->AttachControl(new freqlab_ui::LicenseBanner(bannerArea, modal));
 
     pGraphics->AttachControl(modal);
+    // freqlab:licensing-end
 }
 #endif
 
@@ -99,6 +107,7 @@ void {{class_name}}::OnParamChange(int paramIdx) {
     }
 }
 
+// freqlab:licensing-begin
 // The `@freqlab:require-license` marker tells our cloud transformer
 // to wrap this function with a license gate at build time. The inline
 // `freqlab_should_run_dsp(...)` call below makes the same gate run
@@ -106,11 +115,14 @@ void {{class_name}}::OnParamChange(int paramIdx) {
 // without a cloud build.
 //
 // @freqlab:require-license
+// freqlab:licensing-end
 void {{class_name}}::ProcessBlock(sample** inputs, sample** outputs, int nFrames) {
     const int nChans = NOutChansConnected();
+    // freqlab:licensing-begin
     if (!freqlab_should_run_dsp(outputs, nChans, nFrames))
         return;
 
+    // freqlab:licensing-end
     const double target = mGain.load();
 
     for (int s = 0; s < nFrames; s++) {
@@ -128,9 +140,11 @@ void {{class_name}}::ProcessBlock(sample** inputs, sample** outputs, int nFrames
             outputs[c][s] = samp;
         }
     }
+    // freqlab:licensing-begin
 
     // The cloud transformer injects freqlab_dsp_fold(outputs, nChans, nFrames)
     // here; it is the identity in all licensed builds and only mangles audio
     // in an enforced cloud build when the license is bypassed.
     // @freqlab:dsp-fold
+    // freqlab:licensing-end
 }

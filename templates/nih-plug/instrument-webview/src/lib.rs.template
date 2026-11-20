@@ -3,7 +3,10 @@ use nih_plug_webview::{WebViewEditor, HTMLSource};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+// freqlab:licensing-begin
 use std::sync::Mutex;
+// freqlab:licensing-end
+// freqlab:licensing-begin
 
 // Freqlab licensing: does nothing in stub builds (Status::NoConfig),
 // so a plugin without licensing behaves as if it weren't there.
@@ -11,6 +14,7 @@ use freqlab_licensing as licensing;
 mod freqlab_response;
 mod freqlab_dsp;
 use freqlab_response::freqlab_should_run_dsp;
+// freqlab:licensing-end
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Messages from the WebView UI
@@ -22,9 +26,11 @@ enum UIMessage {
     BeginGain,
     SetGain { value: f32 },
     EndGain,
+    // freqlab:licensing-begin
     ActivateLicense { key: String },
     DeactivateLicense,
     QueryLicense,
+    // freqlab:licensing-end
 }
 
 /// How long a note takes to fade in, and to fade out once its key is up
@@ -134,10 +140,10 @@ impl Plugin for {{struct_name}} {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-
         let params = self.params.clone();
         let gain_changed = self.params.gain_changed.clone();
 
+        // freqlab:licensing-begin
         // SDK calls (activate / deactivate / refresh) are blocking,
         // so they run on worker threads. Workers set
         // `license_changed = true`; on the next event_loop tick we
@@ -147,10 +153,12 @@ impl Plugin for {{struct_name}} {
         let license_changed = Arc::new(AtomicBool::new(true));
         let last_license_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
+        // freqlab:licensing-end
         // A gain drag in progress, so closing the editor mid-drag can still end its gesture
         let gain_gesture = Arc::new(AtomicBool::new(false));
         let (close_params, close_gesture) = (params.clone(), gain_gesture.clone());
 
+        // freqlab:licensing-begin
         // Kick a refresh() when the editor opens so the UI sees the
         // latest server-confirmed state. Flips `license_changed`
         // when done so the first event-loop tick emits a fresh
@@ -163,6 +171,7 @@ impl Plugin for {{struct_name}} {
             });
         }
 
+        // freqlab:licensing-end
         let editor = WebViewEditor::new(HTMLSource::String(include_str!("ui.html")), (400, 320))
             .with_background_color((26, 26, 46, 255))
             .with_developer_mode(cfg!(debug_assertions))
@@ -182,7 +191,9 @@ impl Plugin for {{struct_name}} {
                                     "value": params.gain.unmodulated_normalized_value(),
                                     "text": params.gain.to_string()
                                 }));
+                                // freqlab:licensing-begin
                                 license_changed.store(true, Ordering::Relaxed);
+                                // freqlab:licensing-end
                             }
                             UIMessage::BeginGain => {
                                 gain_gesture.store(true, Ordering::Relaxed);
@@ -195,6 +206,7 @@ impl Plugin for {{struct_name}} {
                                     setter.end_set_parameter(&params.gain);
                                 }
                             }
+                            // freqlab:licensing-begin
                             UIMessage::ActivateLicense { key } => {
                                 let changed = license_changed.clone();
                                 let err_slot = last_license_error.clone();
@@ -228,6 +240,7 @@ impl Plugin for {{struct_name}} {
                             UIMessage::QueryLicense => {
                                 license_changed.store(true, Ordering::Relaxed);
                             }
+                            // freqlab:licensing-end
                         }
                     }
                 }
@@ -240,6 +253,7 @@ impl Plugin for {{struct_name}} {
                         "text": params.gain.to_string()
                     }));
                 }
+                // freqlab:licensing-begin
 
                 if license_changed.swap(false, Ordering::Relaxed) {
                     let info = licensing::current();
@@ -269,6 +283,7 @@ impl Plugin for {{struct_name}} {
                         "error": error,
                     }));
                 }
+                // freqlab:licensing-end
             });
 
         Some(Box::new(editor))
@@ -287,15 +302,18 @@ impl Plugin for {{struct_name}} {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
+        // freqlab:licensing-begin
         // Sync the SDK cache against the server on plugin load.
         // refresh() blocks (disk + HTTP) so it runs on a worker
         // thread. No-op in stub builds (returns NoConfig).
         std::thread::spawn(|| { let _ = licensing::refresh(); });
 
+        // freqlab:licensing-end
         self.sample_rate = buffer_config.sample_rate;
         true
     }
 
+    // freqlab:licensing-begin
     // The `@freqlab:require-license` marker tells our cloud
     // transformer to wrap this function with a license gate at
     // build time. The inline `freqlab_should_run_dsp(buffer)`
@@ -303,12 +321,14 @@ impl Plugin for {{struct_name}} {
     // too, so the plugin silences correctly without a cloud build.
     //
     // @freqlab:require-license
+    // freqlab:licensing-end
     fn process(
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        // freqlab:licensing-begin
         if !freqlab_should_run_dsp(buffer) {
             // (this block's MIDI is skipped, maybe a note's release: no note left hanging)
             self.gate = false;
@@ -316,6 +336,7 @@ impl Plugin for {{struct_name}} {
             return ProcessStatus::Normal;
         }
 
+        // freqlab:licensing-end
         // MIDI events land on the sample they're timed for, not the start of the block
         let mut next_event = context.next_event();
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
@@ -375,15 +396,18 @@ impl Plugin for {{struct_name}} {
             }
         }
 
+        // freqlab:licensing-begin
         // The cloud transformer injects freqlab_dsp_fold(buffer) here; it is the
         // identity in all licensed builds and only mangles audio in an enforced
         // cloud build when the license is bypassed.
         // @freqlab:dsp-fold
 
+        // freqlab:licensing-end
         ProcessStatus::Normal
     }
 }
 
+// freqlab:licensing-begin
 impl Drop for {{struct_name}} {
     fn drop(&mut self) {
         // Flip the SDK's cancellation flag so any in-flight refresh /
@@ -395,6 +419,7 @@ impl Drop for {{struct_name}} {
     }
 }
 
+// freqlab:licensing-end
 impl ClapPlugin for {{struct_name}} {
     const CLAP_ID: &'static str = "{{clap_id}}";
     const CLAP_DESCRIPTION: Option<&'static str> = Some("{{description}}");

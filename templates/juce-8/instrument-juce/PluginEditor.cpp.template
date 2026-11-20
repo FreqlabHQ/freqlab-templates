@@ -1,6 +1,9 @@
 #include "PluginEditor.h"
+// freqlab:licensing-begin
 #include "freqlab_licensing.h"
+// freqlab:licensing-end
 
+// freqlab:licensing-begin
 namespace
 {
     constexpr int kStatusLicensed     = static_cast<int>(freqlab::licensing::Status::Licensed);
@@ -369,6 +372,7 @@ void LicenseModalComponent::onDeactivate()
         });
 }
 
+// freqlab:licensing-end
 {{pascal_name}}Editor::{{pascal_name}}Editor({{pascal_name}}Processor& p)
     : juce::AudioProcessorEditor(p), processorRef(p)
 {
@@ -382,6 +386,7 @@ void LicenseModalComponent::onDeactivate()
     gainAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         processorRef.apvts, "gain", gainSlider);
 
+    // freqlab:licensing-begin
     // License UI overlays. The pill is always added (its paint() draws
     // nothing on NoConfig); the banner shows only for a bad status; the
     // panel opens from either.
@@ -393,6 +398,7 @@ void LicenseModalComponent::onDeactivate()
 
     addChildComponent(licenseModal);
 
+    // freqlab:licensing-end
     // Set editor size
     setSize(300, 250);
 }
@@ -433,6 +439,7 @@ void {{pascal_name}}Editor::paint(juce::Graphics& g)
 
 void {{pascal_name}}Editor::resized()
 {
+    // freqlab:licensing-begin
     // Banner sits across the top while a bad-status flag is on;
     // pulls 24px off the top of `bounds` so the rest of the
     // editor's layout flows below it. When the banner is hidden
@@ -451,6 +458,7 @@ void {{pascal_name}}Editor::resized()
     // Modal covers the whole editor when visible.
     licenseModal.setBounds(getLocalBounds());
 
+    // freqlab:licensing-end
     auto bounds = getLocalBounds().reduced(20);
     bounds.removeFromTop(50);  // Space for title
 

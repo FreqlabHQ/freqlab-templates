@@ -1,6 +1,6 @@
 [package]
 name = "freqlab-templates"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.90"
 description = "Starter plugin templates for Freqlab Studio and Express, and the code that turns one into a project"
