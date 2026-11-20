@@ -160,6 +160,16 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
     endforeach()
 endif()
 
+# Windows: each format writes its import library (.lib and .exp) to its own folder, so formats built
+# at the same time never write the same file
+if(WIN32)
+    foreach(_target ${PROJECT_NAME}-app ${PROJECT_NAME}-vst3 ${PROJECT_NAME}-clap ${PROJECT_NAME}-aax)
+        if(TARGET ${_target})
+            set_target_properties(${_target} PROPERTIES ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/implib/${_target}")
+        endif()
+    endforeach()
+endif()
+
 # Link freqlab licensing into every plugin-shaped target. iPlug2 creates
 # one target per format ({name}-vst3, -clap, -app, -au, -aax, and
 # {name}AU-framework for AUv3); link to whichever exist in this configuration.
